@@ -21,7 +21,7 @@ class AgentBacklog:
         # Use the provided path (filename) to derive a MongoDB database name
         # keep the default value unchanged for compatibility
         dbname = os.path.splitext(os.path.basename(self.db_path))[0]
-        self.client = MongoClient(os.environ.get("MONGO_URI", "mongodb://localhost:27017/"))
+        self.client = MongoClient(os.environ.get("MONGO_URI", "mongodb+srv://asu:pass123@mydeployment.onlk26z.mongodb.net/?appName=mongosh+2.8.2"))
         self.db = self.client[dbname]
         self._initialize_db()
 
@@ -208,7 +208,7 @@ class AgentSpecs:
         #             created Docker Database if running locally
         #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-        self.client = MongoClient("mongodb://localhost:27017/?directConnection=true&serverSelectionTimeoutMS=2000&appName=mongosh+2.8.2")
+        self.client = MongoClient("mongodb+srv://asu:pass123@mydeployment.onlk26z.mongodb.net/?appName=mongosh+2.8.2")
         self.db = self.client[dbname]
         self._initialize_db()
 
