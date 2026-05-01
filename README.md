@@ -18,6 +18,106 @@ CEO Agent is the central decision-maker. It delegates tasks, resolves conflicts,
 - **Inputs**: Role reqs from CEO. Outputs: Hiring plans, team rosters, training modules.
 - **Behaviors**: Screens resumes; simulates interviews. Tools: LinkedIn scraper, calendar scheduler.
 
+## Shared Router Integration
+
+This repo now includes `enterprise_router_client.py`, a small adapter for the shared UI-Team `enterprise_router` FastAPI service. New agents should use this adapter for cross-repo or cloud communication instead of writing directly to MongoDB or sharing a SQLite file.
+
+Recommended flow:
+
+1. Start the UI-Team router API.
+2. Configure the router with SQLite for local development or MongoDB Atlas for cloud persistence.
+3. Register each agent in the router and issue that agent an API key.
+4. Set that key in this repo's environment.
+5. Agents call the router API to send, fetch, ack, and nack messages.
+
+Required environment variables for an agent process:
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `ENTERPRISE_ROUTER_API_URL` | Base URL for the UI-Team router API | `http://localhost:8000` |
+| `ENTERPRISE_ROUTER_AGENT_NAME` | Default authenticated agent name | `HR` |
+| `ENTERPRISE_ROUTER_AGENT_API_KEY` | API key for the authenticated agent | empty |
+| `HR_AGENT_API_KEY` | HR-specific fallback API key | empty |
+| `CEO_AGENT_API_KEY` | CEO-specific fallback API key | empty |
+| `ENTERPRISE_ROUTER_TIMEOUT_S` | HTTP timeout in seconds | `10` |
+
+The HR worker in `hr-agents/hr_agent.py` now polls `POST /messages/fetch-next` through `EnterpriseRouterClient`, processes the envelope, then calls `ack` or `nack` on the shared router. The CEO agent in `ceo-agents/ceo_agent.py` has the same router path through `process_one_router_message()` and `send_router_envelope()`. `AgentBacklog` remains useful as a local SQLite execution log, but the shared queue of record is the router API. That lets `brain-enterprise-lab` visualize the same queues and audit events without reading this repo's local files.
+
+For future agents, reuse the same pattern:
+
+```python
+from enterprise_router_client import EnterpriseRouterClient
+
+client = EnterpriseRouterClient.from_env(agent_name="Sales")
+envelope = client.fetch_next("Sales")
+if envelope:
+    # process work here
+    client.ack_message(envelope["id"], "Sales")
+```
+
+### Local website demo
+
+Use this flow to see the router-connected agents on a local `brain-enterprise-lab` website.
+
+1. Start the UI-Team router API in one terminal:
+
+```powershell
+cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\UI-Team"
+$env:ROUTER_BACKEND="sqlite"
+$env:SQLITE_DB_PATH="enterprise_router_demo.db"
+$env:ROUTER_ADMIN_SECRET="dev-admin-secret"
+python -m enterprise_router.api
+```
+
+2. Seed shared agents and queue a CEO -> HR message in another terminal:
+
+```powershell
+cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
+python .\router_demo.py --send-ceo-to-hr
+```
+
+The script prints `CEO_AGENT_API_KEY`, `HR_AGENT_API_KEY`, and `MANAGER_AGENT_API_KEY`. Keep those values for the next terminals.
+
+3. Run the HR worker against the shared router:
+
+```powershell
+cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
+$env:ENTERPRISE_ROUTER_API_URL="http://localhost:8000"
+$env:HR_AGENT_API_KEY="<paste HR_AGENT_API_KEY>"
+python .\hr-agents\hr_agent.py
+```
+
+4. Run the website locally:
+
+```powershell
+cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\brain-enterprise-lab"
+$env:NEXT_PUBLIC_API_URL="http://localhost:8000"
+$env:NEXT_PUBLIC_ADMIN_SECRET="dev-admin-secret"
+$env:NEXT_PUBLIC_MANAGER_API_KEY="<paste MANAGER_AGENT_API_KEY>"
+npm run dev
+```
+
+5. Open the Next.js URL from the terminal, usually `http://localhost:3000`.
+
+What you should see:
+
+- `/dashboard` and `/observability` can read router health/audit data.
+- `/messages` and queue-oriented views can show shared message state.
+- A CEO -> HR message appears in the router queue before HR processes it.
+- After HR processes it, the message should move through fetched/acked or nacked states in router audit history.
+- Dashboard-originated manager interventions use `POST /manager/interventions` and become normal queued messages.
+
+6. To test CEO receiving messages, send an HR mint request or a manager intervention addressed to `CEO`, then run a small CEO poll from Python:
+
+```powershell
+cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
+$env:ENTERPRISE_ROUTER_API_URL="http://localhost:8000"
+$env:CEO_AGENT_API_KEY="<paste CEO_AGENT_API_KEY>"
+python -c "from agents.ceo_agent import CeoAgent; from ceo_distribution_tokens import CeoDistributionTokenRegistry; ceo=CeoAgent(distribution_registry=CeoDistributionTokenRegistry()); print(ceo.process_one_router_message())"
+```
+
+If the CEO queue has a message, this prints `True` and the router audit log records the fetch and ack/nack lifecycle. If the queue is empty, it prints `False`.
+
 
 ## Distribution tokens (CEO-managed)
 
