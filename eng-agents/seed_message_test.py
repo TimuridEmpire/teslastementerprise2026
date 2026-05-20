@@ -38,6 +38,8 @@ message = {
 
 client = MongoClient(MONGO_URI)
 db = client[MONGO_DB]
-result = db.messages.insert_one(message)
-print(f"Inserted message with _id: {result.inserted_id}")
-print("The engineering agent will pick this up on its next poll.")
+# TODO: Uncomment the following lines to insert the message into the database and make sure that the connection works correctly
+# The connection should not say "No connection could be made because the target machine actively refused it"
+# result = db.messages.insert_one(message)
+#print(f"Inserted message with _id: {result.inserted_id}")
+# print("The engineering agent will pick this up on its next poll.")
