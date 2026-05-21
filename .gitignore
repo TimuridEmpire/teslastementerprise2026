@@ -13,6 +13,7 @@ demo_concurrent_topics.db
 # MessageBus / enterprise local backlog + JSONL audit (same paths for all agents)
 enterprise_backlog.db
 enterprise_message_bus.jsonl
+enterprise_router.db
 
 # Visual Studio
 .vs/

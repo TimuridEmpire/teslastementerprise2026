@@ -1,123 +1,149 @@
 """
-HTTP helpers for inter-agent communication when agents live in separate services.
+HTTP layer for cross-service agent communication via the Enterprise Router.
 
-Persistence:
-  * **MongoDB** — envelopes and mailboxes for cross-service traffic (``InterAgentMongoStore``).
-  * **SQLite** — in-process internal backlog (``AgentBacklog``); not used by these routes unless you enable mirroring on the store.
+Run the router API:
+  python -m enterprise_router.api
 
-Expected server routes:
-- POST /messages/send               body: envelope dict
-- GET  /messages/receive/{agent}    returns one envelope or null
-- GET  /messages/pending/{agent}    returns {"pending": int}
-
-Use ``create_inter_agent_fastapi_app()`` to run the API; requires ``fastapi`` and ``uvicorn``.
+Environment (see ``enterprise_paths`` and ``enterprise_router.config``):
+  ENTERPRISE_ROUTER_URL, ENTERPRISE_AGENT_NAME, ENTERPRISE_AGENT_API_KEY — agent clients
+  ENTERPRISE_ROUTER_ADMIN_SECRET — admin endpoints
+  ENTERPRISE_ROUTER_BACKEND — sqlite (default) or mongo for the message queue
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
-import requests #pyright: ignore[reportMissingModuleSource]
+import requests  # pyright: ignore[reportMissingModuleSource]
+
+from enterprise_router_client import EnterpriseRouterClient, router_configured
+from message_schema import Message
 
 if TYPE_CHECKING:
     from inter_agent_mongo import InterAgentMongoStore
+
+
+def _client_or_raise() -> EnterpriseRouterClient:
+    client = EnterpriseRouterClient.from_env()
+    if client is None:
+        raise RuntimeError(
+            "Enterprise router client is not configured. Set ENTERPRISE_ROUTER_URL, "
+            "ENTERPRISE_AGENT_NAME, and ENTERPRISE_AGENT_API_KEY."
+        )
+    return client
 
 
 def send_envelope_http(
     base_url: str,
     envelope: Dict[str, Any],
     *,
+    api_key: str,
+    agent_name: str,
     timeout_s: float = 10.0,
+    routing_hints: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Send one standardized envelope to a MessageBus HTTP service."""
-    url = f"{base_url.rstrip('/')}/messages/send"
-    resp = requests.post(url, json=envelope, timeout=timeout_s)
-    resp.raise_for_status()
-    data = resp.json()
-    if not isinstance(data, dict):
-        raise ValueError("Expected JSON object response from /messages/send")
-    return data
+    """Submit one envelope through POST /messages (enterprise routing)."""
+    client = EnterpriseRouterClient(base_url, agent_name, api_key, timeout_s=timeout_s)
+    message_id = client.submit_message(envelope, routing_hints=routing_hints)
+    return {"ok": True, "message_id": message_id, "id": envelope.get("id", message_id)}
 
 
 def receive_envelope_http(
     base_url: str,
     agent_name: str,
     *,
+    api_key: str,
     timeout_s: float = 10.0,
 ) -> Optional[Dict[str, Any]]:
-    """Pull one queued envelope for an agent from an HTTP-backed mailbox."""
-    url = f"{base_url.rstrip('/')}/messages/receive/{agent_name}"
-    resp = requests.get(url, timeout=timeout_s)
-    resp.raise_for_status()
-    data = resp.json()
-    if data is None:
-        return None
-    if not isinstance(data, dict):
-        raise ValueError("Expected object-or-null response from /messages/receive/{agent}")
-    return data
+    """Lease the next message via POST /messages/fetch-next."""
+    client = EnterpriseRouterClient(base_url, agent_name, api_key, timeout_s=timeout_s)
+    return client.fetch_next(agent_name)
 
 
 def pending_count_http(
     base_url: str,
     agent_name: str,
     *,
+    api_key: str,
     timeout_s: float = 10.0,
 ) -> int:
-    """Read queued mailbox depth for an agent from an HTTP service."""
-    url = f"{base_url.rstrip('/')}/messages/pending/{agent_name}"
-    resp = requests.get(url, timeout=timeout_s)
-    resp.raise_for_status()
-    data = resp.json()
-    if not isinstance(data, dict) or "pending" not in data:
-        raise ValueError("Expected {'pending': <int>} from /messages/pending/{agent}")
-    return int(data["pending"])
+    """Approximate queue depth via GET /messages/peek."""
+    client = EnterpriseRouterClient(base_url, agent_name, api_key, timeout_s=timeout_s)
+    return client.pending_count()
 
 
-def create_inter_agent_fastapi_app(store: "InterAgentMongoStore"):
+def send_envelope(
+    envelope: Union[Message, Dict[str, Any]],
+    *,
+    routing_hints: dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Send using env-configured enterprise router client."""
+    client = _client_or_raise()
+    message_id = client.submit_message(envelope, routing_hints=routing_hints)
+    eid = envelope.get("id") if isinstance(envelope, dict) else envelope.id
+    return {"ok": True, "message_id": message_id, "id": eid}
+
+
+def receive_envelope(agent_name: str | None = None) -> Optional[Dict[str, Any]]:
+    client = _client_or_raise()
+    return client.fetch_next(agent_name)
+
+
+def create_inter_agent_fastapi_app(store: "InterAgentMongoStore | None" = None):
     """
-    Build a FastAPI app backed by ``InterAgentMongoStore`` (MongoDB).
+    Build the Enterprise Router FastAPI app.
 
-    Install: ``pip install fastapi uvicorn pymongo``
+    The ``store`` argument is ignored (kept for backward compatibility).
     """
-    from fastapi import Body, FastAPI, HTTPException
+    from enterprise_router.api import create_app
+    from enterprise_router.config import RouterSettings
 
-    app = FastAPI(title="Inter-agent messages", version="1.0")
-
-    @app.post("/messages/send")
-    def post_send(envelope: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-        result = store.record_and_enqueue(envelope)
-        if not result.get("ok"):
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("error", "invalid envelope"),
-            )
-        return result
-
-    @app.get("/messages/receive/{agent_name}")
-    def get_receive(agent_name: str) -> Optional[Dict[str, Any]]:
-        return store.pop_next_for_recipient(agent_name)
-
-    @app.get("/messages/pending/{agent_name}")
-    def get_pending(agent_name: str) -> Dict[str, int]:
-        return {"pending": store.pending_count(agent_name)}
-
-    return app
+    return create_app(RouterSettings.from_env())
 
 
 def run_inter_agent_api_server(
     *,
-    host: str = "127.0.0.1",
-    port: int = 8765,
+    host: str | None = None,
+    port: int | None = None,
     mirror_sqlite: bool = False,
 ) -> None:
-    """Convenience: Mongo store from env + uvicorn. For production, use your own ASGI deployment."""
+    """
+    Start the enterprise router with uvicorn.
+
+    ``mirror_sqlite`` is ignored; SQLite backlog mirroring is configured on the
+    mongo store via ``InterAgentMongoStore(mirror_backlog=...)`` when using backend=mongo.
+    """
     import uvicorn
 
-    from inter_agent_mongo import inter_agent_store_from_env
+    from enterprise_router.config import RouterSettings
 
-    store = inter_agent_store_from_env(mirror_sqlite=mirror_sqlite)
-    app = create_inter_agent_fastapi_app(store)
-    uvicorn.run(app, host=host, port=port)
+    settings = RouterSettings.from_env()
+    if host is not None:
+        settings = RouterSettings(
+            backend=settings.backend,
+            sqlite_db_path=settings.sqlite_db_path,
+            mongo_uri=settings.mongo_uri,
+            mongo_db_name=settings.mongo_db_name,
+            shared_secret=settings.shared_secret,
+            admin_secret=settings.admin_secret,
+            api_host=host,
+            api_port=port if port is not None else settings.api_port,
+        )
+    elif port is not None:
+        settings = RouterSettings(
+            backend=settings.backend,
+            sqlite_db_path=settings.sqlite_db_path,
+            mongo_uri=settings.mongo_uri,
+            mongo_db_name=settings.mongo_db_name,
+            shared_secret=settings.shared_secret,
+            admin_secret=settings.admin_secret,
+            api_host=settings.api_host,
+            api_port=port,
+        )
+
+    from enterprise_router.api import create_app
+
+    uvicorn.run(create_app(settings), host=settings.api_host, port=settings.api_port)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from message_bus import MessageBus
+from message_bus import MessageBus, send_message
+from enterprise_router_client import router_configured
 
 from thread_safe_agent import SupportsBusRegistration
 
@@ -105,9 +106,15 @@ def send_messages_parallel(
     if not msgs:
         return []
     workers = max_workers or min(32, len(msgs))
+
+    def _dispatch(m: Dict[str, Any]) -> Any:
+        if router_configured():
+            return send_message(m)
+        return bus.send(m)
+
     results: List[Optional[Any]] = [None] * len(msgs)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(bus.send, m): i for i, m in enumerate(msgs)}
+        futures = {pool.submit(_dispatch, m): i for i, m in enumerate(msgs)}
         for fut in as_completed(futures):
             idx = futures[fut]
             results[idx] = fut.result()

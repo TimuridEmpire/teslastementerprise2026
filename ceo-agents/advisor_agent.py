@@ -3,6 +3,7 @@ import datetime
 from typing import Any, Dict
 
 from agent_logger import get_agent_logger, log_inter_agent_message
+from agent_transport import AGENT_CEO, make_envelope, submit
 
 from thread_safe_agent import ThreadSafeAgentMixin
 
@@ -54,29 +55,26 @@ class AdvisorAgent(ThreadSafeAgentMixin):
             is_aligned = False
             feedback = "WARNING: Proposed hardware manufacturing violates the core software focus strategy."
 
-        # 3. Construct the Advisor's response using the strict JSON schema
-        advisory_response = {
-            "id": f"adv-{uuid.uuid4().hex[:6]}",
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-            "sender": self.name,
-            "recipient": ceo_proposal_message.get("sender", "CEO"),
-            "task_type": "STRATEGY_REVIEW_RESULT",
-            "context": {
+        advisory_response = make_envelope(
+            sender=self.name,
+            recipient=ceo_proposal_message.get("sender", AGENT_CEO),
+            task_type="STRATEGY_REVIEW_RESULT",
+            context={
                 "original_task": task_type,
-                "review_cycle": "pre-execution"
+                "review_cycle": "pre-execution",
             },
-            "payload": {
+            payload={
                 "is_aligned": is_aligned,
                 "assessment": feedback,
-                "recommended_action": "PROCEED" if is_aligned else "REVISE"
+                "recommended_action": "PROCEED" if is_aligned else "REVISE",
             },
-            "status": "done",
-            "error": ""
-        }
-        
-        # 4. Log the outgoing feedback
+            status="done",
+            message_id=f"adv-{uuid.uuid4().hex[:6]}",
+        )
+
         log_inter_agent_message(self.logger, advisory_response, direction="SENDING")
-        
+        submit(advisory_response)
+
         return advisory_response
 
     def on_bus_envelope(self, envelope: Dict[str, Any]) -> Any:

@@ -1,9 +1,9 @@
 import os
 from typing import Optional, Dict, Any
-from message_bus import get_messages_for, send_message
+from agent_transport import AGENT_MARKETING, drain_mailbox, submit
 from message_schema import Message
 from pm_tools import generate_features_llm, moscow_prioritize, create_project, add_request_to_project
-from storage import storage
+from pm_storage import storage
 
 # --- INTEGRATION: Import the enterprise logger utilities ---
 from agent_logger import get_agent_logger, log_inter_agent_message
@@ -17,7 +17,7 @@ class PMAgent:
         self.logger = get_agent_logger(self.name)
 
     def run(self):
-        msgs = get_messages_for(self.name)
+        msgs = drain_mailbox(self.name)
         for m in msgs:
             # --- INTEGRATION: Log the received envelope cleanly ---
             log_inter_agent_message(self.logger, m, direction="RECEIVING")
@@ -88,17 +88,17 @@ class PMAgent:
         # --- INTEGRATION: Log outbound messages ---
         campaign_msg = Message.create(
             sender=self.name,
-            recipient="Marketing",
+            recipient=AGENT_MARKETING,
             task_type="LAUNCH_CAMPAIGN",
             context={"project_id": project["id"]},
             payload={"product_name": product, "features": feature_list}
         )
         log_inter_agent_message(self.logger, campaign_msg, direction="SENDING")
-        send_message(campaign_msg)
+        submit(campaign_msg)
 
         report_msg = Message.create(
             sender=self.name,
-            recipient="Marketing",
+            recipient=AGENT_MARKETING,
             task_type="PM_REPORT",
             context={"project_id": project["id"]},
             payload={
@@ -109,7 +109,7 @@ class PMAgent:
             }
         )
         log_inter_agent_message(self.logger, report_msg, direction="SENDING")
-        send_message(report_msg)
+        submit(report_msg)
 
     def handle_feature_request(self, msg):
         self.logger.info(f"PMAgent received feature request: {msg['id']}")
@@ -146,4 +146,4 @@ class PMAgent:
             payload={"features": prioritized}
         )
         log_inter_agent_message(self.logger, response_msg, direction="SENDING")
-        send_message(response_msg)
+        submit(response_msg)

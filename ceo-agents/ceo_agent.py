@@ -7,8 +7,9 @@ import datetime
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-import requests
+import requests  # pyright: ignore[reportMissingModuleSource]
 from agent_logger import get_agent_logger
+from agent_transport import delegate
 
 from thread_safe_agent import ThreadSafeAgentMixin
 
@@ -49,6 +50,23 @@ class CeoAgent(ThreadSafeAgentMixin):
             "last_cycle_started_at": None,
         }
         self.logger.info(f"{self.name} Agent initialized and linked to Docker.")
+
+    def send_task(
+        self,
+        recipient: str,
+        task_type: str,
+        payload: Dict[str, Any],
+        *,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Delegate a standard envelope to another agent via the enterprise router."""
+        return delegate(
+            self.name,
+            recipient,
+            task_type,
+            payload,
+            context=context,
+        )
 
     def update_environment_safety_signal(self, *, children_nearby: bool) -> None:
         """Persist latest child-safety signal from local sensors/microphones."""

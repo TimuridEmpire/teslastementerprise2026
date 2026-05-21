@@ -1,25 +1,30 @@
 """
-seed_message_test.py
-Run this once to insert a test PM message into the local MongoDB.
-The engineering agent will pick it up on its next poll.
+Insert a test PM → Engineering message via the enterprise router (or legacy Mongo).
 """
 
-from pymongo import MongoClient
+from __future__ import annotations
 
-MONGO_URI = "mongodb://localhost:27017"
-MONGO_DB  = "kanosei"
+import os
+import sys
+from pathlib import Path
 
-message = {
-    "id": "req-002",
-    "timestamp": "2026-04-25T00:00:00Z",
-    "sender": "PM",
-    "recipient": "ENG",
-    "task_type": "IMPLEMENT_FEATURE",
-    "context": {
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from agent_transport import AGENT_ENGINEERING, AGENT_PM, make_envelope, submit
+from enterprise_router_client import router_configured
+
+message = make_envelope(
+    sender=AGENT_PM,
+    recipient=AGENT_ENGINEERING,
+    task_type="IMPLEMENT_FEATURE",
+    message_id="req-002",
+    context={
         "priority": "high",
-        "target_release": "2026-05-01"
+        "target_release": "2026-05-01",
     },
-    "payload": {
+    payload={
         "feature_id": "FT-001",
         "feature_name": "Number guessing game",
         "spec_link": "",
@@ -29,17 +34,33 @@ message = {
             "The player has a limited number of attempts to guess the number- after that limit is reached, the player loses",
             "After each guess provide feedback: too high, too low, or correct",
             "The game should have a simple and intuitive user interface",
-            "Users should be able to run a main.py file created by the agent to launch the Streamlit app and play the game"
-        ]
+            "Users should be able to run a main.py file created by the agent to launch the Streamlit app and play the game",
+        ],
     },
-    "status": "pending",
-    "error": ""
-}
+)
 
-client = MongoClient(MONGO_URI)
-db = client[MONGO_DB]
-# TODO: Uncomment the following lines to insert the message into the database and make sure that the connection works correctly
-# The connection should not say "No connection could be made because the target machine actively refused it"
-# result = db.messages.insert_one(message)
-#print(f"Inserted message with _id: {result.inserted_id}")
-# print("The engineering agent will pick this up on its next poll.")
+
+def main() -> None:
+    if router_configured():
+        prev = os.environ.get("ENTERPRISE_AGENT_NAME")
+        os.environ["ENTERPRISE_AGENT_NAME"] = AGENT_PM
+        try:
+            mid = submit(message)
+            print(f"Submitted via enterprise router: message_id={mid}")
+        finally:
+            if prev is not None:
+                os.environ["ENTERPRISE_AGENT_NAME"] = prev
+        return
+
+    from pymongo import MongoClient
+    from enterprise_paths import inter_agent_mongo_db_name, inter_agent_mongo_uri
+
+    client = MongoClient(inter_agent_mongo_uri())
+    db = client[inter_agent_mongo_db_name()]
+    result = db.messages.insert_one(message)
+    print(f"Inserted legacy Mongo message _id={result.inserted_id}")
+    print("Engineering agent will pick this up on its next poll (legacy mode).")
+
+
+if __name__ == "__main__":
+    main()
