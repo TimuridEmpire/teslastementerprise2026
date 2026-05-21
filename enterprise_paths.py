@@ -14,7 +14,11 @@ ENTERPRISE_MONGO_INTER_AGENT_DB  — Mongo DB name (default: enterprise_inter_ag
 from __future__ import annotations
 
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):  # type: ignore[override]
+        return False
 
 # Load the .env file once for the whole application
 load_dotenv()

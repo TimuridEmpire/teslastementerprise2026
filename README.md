@@ -6,11 +6,18 @@ CEO Agent is the central decision-maker. It delegates tasks, resolves conflicts,
 # Agent Specific Info
 
 ## CEO Agent
-- Role: Strategic leader; sets goals, delegates, arbitrates.
-- Responsibilities: Analyze market trends; define quarterly OKRs; assign tasks (e.g., "Launch MVP"); review reports; veto/approve proposals.
-- Inputs: Market data, agent reports. Outputs: Task delegations, OKRs, final decisions.
-- Behaviors: Uses reasoning chains for prioritization; prompts like "Prioritize based on ROI >20%." Tools: Analytics dashboard, email notifier.
+- **Role**: Strategic leader; sets goals, delegates, arbitrates.
+- **Responsibilities**: Analyze market trends; define quarterly OKRs; assign tasks (e.g., "Launch MVP"); review reports; veto/approve proposals.
+- **Inputs**: Market data, agent reports. Outputs: Task delegations, OKRs, final decisions.
+- **Behaviors**: Uses reasoning chains for prioritization; prompts like "Prioritize based on ROI >20%." Tools: Analytics dashboard, email notifier.
 - **Distribution tokens:** The CEO also governs [distribution tokens](#distribution-tokens-ceo-managed) (scenarios, minting, and per-agent assignments) when the message bus enforces token-gated sends.
+
+## HR Agent
+- **Role**: Manages talent and operations.
+- **Responsibilities**: Recruit "virtual hires" (spawn sub-agents); onboard/train; performance reviews; compliance checks.
+- **Inputs**: Role reqs from CEO. Outputs: Hiring plans, team rosters, training modules.
+- **Behaviors**: Screens resumes; simulates interviews. Tools: LinkedIn scraper, calendar scheduler.
+
 
 ## Distribution tokens (CEO-managed)
 
@@ -153,6 +160,40 @@ The table below is a **project default you can implement** with `CeoDistribution
     END IF
 
 END PROCEDURE
+
+## Simulation Test: Process & Goals
+
+The `standard_scenario_test.py` script acts as our primary integration test for the entire multi-agent architecture. It simulates a high-stakes corporate initiative to verify that our internal agent economy, message routing, and persistence layers are working in harmony.
+
+### Primary Goals of the Test
+1. **Verify the Token Economy:** Ensure the `CeoDistributionTokenRegistry` correctly mints, allocates, and deducts tokens. The test verifies that the CEO can use standard tokens for individual delegations and successfully execute a higher-cost `EXECUTIVE_BROADCAST` token for the final decision.
+2. **Test Asynchronous Routing:** Confirm that the `MessageBus` correctly routes direct messages from the CEO to specific departments, as well as peer-to-peer messages (e.g., HR and Marketing sending cost data directly to Finance without CEO intervention).
+3. **Validate Schema Compliance:** Ensure every agent communicates using the strict JSON envelope schema without triggering formatting errors.
+4. **Confirm Dual-Persistence:** Verify that every transaction is simultaneously recorded to the cloud (MongoDB Atlas) and local storage (SQLite / JSONL).
+
+### The Execution Process
+When the simulation is triggered, the following workflow occurs automatically:
+1. **Central Bank Initialization:** The CEO mints a total supply of standard and broadcast tokens, transferring specific budgets to each department.
+2. **The Catalyst:** The CEO broadcasts initial directives to PM, Engineering, HR, Marketing, Sales, and Finance to begin the project.
+3. **Departmental Processing:** Agents process their directives. Sub-routines trigger HR and Marketing to send financial estimates to the Finance Agent.
+4. **Aggregation:** Finance calculates a strict ROI based on those inputs and routes the forecast back to the CEO. 
+5. **Executive Decision:** The CEO ingests the final data, verifies the minimum ROI threshold is met, and consumes an `EXECUTIVE_BROADCAST` token to announce the final "GO" decision.
+
+---
+
+## Running and Verifying in Git Bash
+
+If you are using Git Bash (or any standard Linux/Mac terminal), you can run the simulation and verify the outputs entirely via the command line.
+
+### Run All Simulations
+Make sure your virtual environment is activated, then run the tests as Python modules using pytest:
+
+`python -m pytest`
+
+### Run Specific Simulation
+For running a specific simulation, run the test as a Python module:
+
+`python -m standard_scenario_test`
 
 # Instructions and Necessities
 

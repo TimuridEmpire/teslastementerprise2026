@@ -14,6 +14,7 @@ from typing import Any, Callable, DefaultDict, Deque, Dict, List, Optional, TYPE
 
 from agent_backlog import AgentBacklog
 from agent_logger import get_agent_logger, log_inter_agent_message
+from enterprise_paths import message_bus_jsonl_path
 
 if TYPE_CHECKING:
     from ceo_distribution_tokens import CeoDistributionTokenRegistry
@@ -54,12 +55,14 @@ class MessageBus:
     def __init__(
         self,
         backlog: Optional[AgentBacklog] = None,
-        json_log_path: str = "enterprise_message_bus.jsonl",
+        json_log_path: Optional[str] = None,
         distribution_tokens: Optional["CeoDistributionTokenRegistry"] = None,
         enforce_distribution_tokens: bool = False,
     ):
         self._backlog = backlog or AgentBacklog()
-        self._json_log_path = json_log_path
+        self._json_log_path = (
+            json_log_path if json_log_path is not None else message_bus_jsonl_path()
+        )
         self._distribution_tokens = distribution_tokens
         self._enforce_distribution_tokens = bool(
             enforce_distribution_tokens and distribution_tokens is not None

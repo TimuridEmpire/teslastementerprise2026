@@ -11,8 +11,8 @@ from typing import Any, Dict, List
 
 from agent_backlog import AgentBacklog
 from agents.advisor_agent import AdvisorAgent
-from agents.multithreaded_agent import ParallelAgentRuntime, send_messages_parallel
-from agents.thread_safe_agent import ThreadSafeAgentMixin
+from multithreaded_agent import ParallelAgentRuntime, send_messages_parallel
+from thread_safe_agent import ThreadSafeAgentMixin
 from message_bus import MessageBus
 
 

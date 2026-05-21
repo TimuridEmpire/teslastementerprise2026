@@ -2,6 +2,9 @@ import sqlite3
 import json
 import os
 from datetime import datetime
+from typing import Optional
+
+from enterprise_paths import backlog_db_path
 
 
 class AgentBacklog:
@@ -14,8 +17,8 @@ class AgentBacklog:
     }
     """
 
-    def __init__(self, db_path="enterprise_backlog.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path if db_path is not None else backlog_db_path()
         self._initialize_db()
 
     # ================================================================
@@ -236,7 +239,7 @@ class AgentBacklog:
 # ====================================================================
 # QUICK TEST
 # Run this file directly to verify everything works
-# python database.py
+# python agent_backlog.py
 # ====================================================================
 if __name__ == "__main__":
     db = AgentBacklog()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, TYPE_CHECKING
+import hashlib
 
 # We trust these imported functions to securely handle the .env logic now
 from enterprise_paths import inter_agent_mongo_db_name, inter_agent_mongo_uri
@@ -13,7 +14,17 @@ if TYPE_CHECKING:
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
-class OnlineDB:
+
+def _normalize_db_name(name: str, max_bytes: int = 38) -> str:
+    encoded_len = len(name.encode("utf-8"))
+    if encoded_len <= max_bytes:
+        return name
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    keep = max_bytes - len("ia_") - len(digest) - 1
+    prefix = name.encode("utf-8")[:keep].decode("utf-8", errors="ignore")
+    return f"ia_{prefix}_{digest}"
+
+class InterAgentMongoStore:
     """
     Stores envelopes and per-recipient FIFO inboxes in MongoDB.
     """
@@ -38,12 +49,14 @@ class OnlineDB:
         uri = mongo_uri if mongo_uri is not None else inter_agent_mongo_uri()
         name = db_name if db_name is not None else inter_agent_mongo_db_name()
 
+        normalized_name = _normalize_db_name(name)
+
         self._mirror = mirror_backlog
         self._DuplicateKeyError = DuplicateKeyError
         
         self._client = MongoClient(uri)
-        self._db = self._client[name]
-        
+        self._db = self._client[normalized_name]
+
         self._envelopes = self._db["envelopes"]
         self._inbox = self._db["inbox"]
         self._envelopes.create_index("id", unique=True)
@@ -116,7 +129,7 @@ class OnlineDB:
 def inter_agent_store_from_env(
     *,
     mirror_sqlite: bool = False,
-) -> OnlineDB:
+) -> InterAgentMongoStore:
     """
     Factory using environment defaults. If mirror_sqlite is True, also append to
     the canonical SQLite backlog (same file as in-process agents).
@@ -124,4 +137,4 @@ def inter_agent_store_from_env(
     from agent_backlog import AgentBacklog
 
     mirror = AgentBacklog() if mirror_sqlite else None
-    return OnlineDB(mirror_backlog=mirror)
+    return InterAgentMongoStore(mirror_backlog=mirror)

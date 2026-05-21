@@ -10,7 +10,7 @@ import threading
 import unittest
 
 from agent_backlog import AgentBacklog
-from agents import multithreaded_agent as mt
+import multithreaded_agent as mt
 from message_bus import MessageBus
 
 
