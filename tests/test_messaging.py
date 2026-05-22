@@ -25,7 +25,7 @@ def run_test():
         },
     )
 
-    log_inter_agent_message(ceo_logger, ceo_to_pm_message.to_dict(), direction="SENDING")
+    log_inter_agent_message(ceo_logger, ceo_to_pm_message, direction="SENDING")
 
     try:
         mid = submit(ceo_to_pm_message)

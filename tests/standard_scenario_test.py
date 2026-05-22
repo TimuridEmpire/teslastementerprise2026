@@ -1,28 +1,25 @@
-import uuid
 import time
-from datetime import datetime, timezone
 
 # Import the core infrastructure
 from message_bus import MessageBus
 from inter_agent_mongo import inter_agent_store_from_env
 from ceo_distribution_tokens import CeoDistributionTokenRegistry
+from message_schema import Message, normalize_envelope
 
 def generate_envelope(sender: str, recipient: str, task_type: str, payload: dict, scenario: str = "STANDARD_DELEGATION") -> dict:
     """Helper to generate our strict JSON schema envelope, now with dynamic scenarios."""
-    return {
-        "id": f"msg-{uuid.uuid4().hex[:8]}",
-        "timestamp": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        "sender": sender,
-        "recipient": recipient,
-        "task_type": task_type,
-        "context": {
-            "project": "Project Tesla",
-            "distribution_scenario": scenario 
-        },
-        "payload": payload,
-        "status": "pending",
-        "error": ""
-    }
+    return normalize_envelope(
+        Message.create(
+            sender=sender,
+            recipient=recipient,
+            task_type=task_type,
+            context={
+                "project": "Project Tesla",
+                "distribution_scenario": scenario,
+            },
+            payload=payload,
+        )
+    )
 
 def run_launch_simulation():
     print("\n --- Booting Enterprise Multi-Agent Simulation: Project Tesla --- \n")

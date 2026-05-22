@@ -15,27 +15,12 @@ from typing import Any, Callable, DefaultDict, Deque, Dict, List, Optional, TYPE
 from agent_backlog import AgentBacklog
 from agent_logger import get_agent_logger, log_inter_agent_message
 from enterprise_paths import message_bus_jsonl_path
-from message_schema import Message
+from message_schema import EnvelopeInput, Message, normalize_envelope
 
 if TYPE_CHECKING:
     from ceo_distribution_tokens import CeoDistributionTokenRegistry
 
 Handler = Callable[[Dict[str, Any]], Any]
-
-
-def normalize_envelope(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Fill missing keys so backlog / JSON logs stay aligned with agent_backlog."""
-    return {
-        "id": raw.get("id", ""),
-        "timestamp": raw.get("timestamp", ""),
-        "sender": raw.get("sender", ""),
-        "recipient": raw.get("recipient", ""),
-        "task_type": raw.get("task_type", ""),
-        "context": raw.get("context") if isinstance(raw.get("context"), dict) else {},
-        "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
-        "status": raw.get("status", ""),
-        "error": raw.get("error", "") or "",
-    }
 
 
 def _append_jsonl(path: str, record: Dict[str, Any]) -> None:
@@ -91,7 +76,7 @@ class MessageBus:
             self._backlog.record_interaction(envelope)
             _append_jsonl(self._json_log_path, envelope)
 
-    def send(self, message: Dict[str, Any]) -> Optional[Any]:
+    def send(self, message: EnvelopeInput) -> Optional[Any]:
         """
         Route a message: normalize, persist (SQLite backlog + JSONL), log, then deliver.
         Returns handler return value if a handler ran, else None (message queued in mailbox).
@@ -207,7 +192,7 @@ def send_message(message: Message | dict[str, Any]) -> str | None:
     """
     from enterprise_router_client import EnterpriseRouterClient, router_configured
 
-    envelope = message.to_dict() if isinstance(message, Message) else normalize_envelope(message)
+    envelope = normalize_envelope(message)
 
     if router_configured():
         client = EnterpriseRouterClient.from_env()

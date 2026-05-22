@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
 
 from enterprise_router_client import EnterpriseRouterClient, router_configured
-from message_bus import MessageBus, normalize_envelope, send_message
-from message_schema import Message
+from message_bus import MessageBus, send_message
+from message_schema import EnvelopeInput, Message, normalize_envelope
 
 _default_bus: MessageBus | None = None
 
@@ -46,18 +46,19 @@ def make_envelope(
     error: str = "",
     message_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    data = Message.create(
-        sender=sender,
-        recipient=recipient,
-        task_type=task_type,
-        context=context,
-        payload=payload,
-    ).to_dict()
-    if message_id:
-        data["id"] = message_id
-    data["status"] = status
-    data["error"] = error or ""
-    return data
+    """Build and validate a canonical envelope dict."""
+    return normalize_envelope(
+        Message.create(
+            sender=sender,
+            recipient=recipient,
+            task_type=task_type,
+            context=context,
+            payload=payload,
+            status=status,
+            error=error,
+            message_id=message_id,
+        )
+    )
 
 
 def _local_bus() -> MessageBus:
@@ -72,15 +73,12 @@ def client() -> EnterpriseRouterClient | None:
 
 
 def submit(
-    envelope: Union[Message, dict[str, Any]],
+    envelope: EnvelopeInput,
     *,
     routing_hints: dict[str, Any] | None = None,
 ) -> str:
     """Submit an envelope; returns message id."""
-    if isinstance(envelope, Message):
-        raw = envelope.to_dict()
-    else:
-        raw = normalize_envelope(envelope)
+    raw = normalize_envelope(envelope)
     if router_configured():
         c = client()
         assert c is not None

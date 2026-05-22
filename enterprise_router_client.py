@@ -10,11 +10,11 @@ Agents set:
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 import requests  # pyright: ignore[reportMissingModuleSource]
 
-from message_schema import Message
+from message_schema import EnvelopeInput, Message, normalize_envelope
 
 
 def router_base_url() -> str | None:
@@ -68,14 +68,11 @@ class EnterpriseRouterClient:
 
     def submit_message(
         self,
-        envelope: Union[Message, Dict[str, Any]],
+        envelope: EnvelopeInput,
         *,
         routing_hints: dict[str, Any] | None = None,
     ) -> str:
-        if isinstance(envelope, Message):
-            body_msg = envelope.to_dict()
-        else:
-            body_msg = dict(envelope)
+        body_msg = normalize_envelope(envelope)
         if body_msg.get("sender") != self.agent_name:
             raise ValueError(
                 f"Envelope sender {body_msg.get('sender')!r} must match client agent {self.agent_name!r}."

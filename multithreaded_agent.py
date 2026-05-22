@@ -16,14 +16,13 @@ consume from mailboxes in their own threads.
 
 from __future__ import annotations
 
-import datetime
 import threading
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from message_bus import MessageBus, send_message
+from message_schema import Message, normalize_envelope
 from enterprise_router_client import router_configured
 
 from thread_safe_agent import SupportsBusRegistration
@@ -76,19 +75,15 @@ def make_topic_envelope(
     ch = topic_channel_name(topic)
     ctx = dict(context or {})
     ctx.setdefault("topic", topic)
-    return {
-        "id": f"msg-{uuid.uuid4().hex[:10]}",
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        ),
-        "sender": sender,
-        "recipient": recipient or ch,
-        "task_type": task_type,
-        "context": ctx,
-        "payload": payload,
-        "status": "pending",
-        "error": "",
-    }
+    return normalize_envelope(
+        Message.create(
+            sender=sender,
+            recipient=recipient or ch,
+            task_type=task_type,
+            context=ctx,
+            payload=payload,
+        )
+    )
 
 
 def send_messages_parallel(

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 import requests  # pyright: ignore[reportMissingModuleSource]
 
 from enterprise_router_client import EnterpriseRouterClient, router_configured
-from message_schema import Message
+from message_schema import EnvelopeInput, Message, normalize_envelope
 
 if TYPE_CHECKING:
     from inter_agent_mongo import InterAgentMongoStore
@@ -35,7 +35,7 @@ def _client_or_raise() -> EnterpriseRouterClient:
 
 def send_envelope_http(
     base_url: str,
-    envelope: Dict[str, Any],
+    envelope: EnvelopeInput,
     *,
     api_key: str,
     agent_name: str,
@@ -43,9 +43,10 @@ def send_envelope_http(
     routing_hints: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Submit one envelope through POST /messages (enterprise routing)."""
+    env = normalize_envelope(envelope)
     client = EnterpriseRouterClient(base_url, agent_name, api_key, timeout_s=timeout_s)
-    message_id = client.submit_message(envelope, routing_hints=routing_hints)
-    return {"ok": True, "message_id": message_id, "id": envelope.get("id", message_id)}
+    message_id = client.submit_message(env, routing_hints=routing_hints)
+    return {"ok": True, "message_id": message_id, "id": env.get("id", message_id)}
 
 
 def receive_envelope_http(
@@ -73,15 +74,15 @@ def pending_count_http(
 
 
 def send_envelope(
-    envelope: Union[Message, Dict[str, Any]],
+    envelope: EnvelopeInput,
     *,
     routing_hints: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Send using env-configured enterprise router client."""
+    env = normalize_envelope(envelope)
     client = _client_or_raise()
-    message_id = client.submit_message(envelope, routing_hints=routing_hints)
-    eid = envelope.get("id") if isinstance(envelope, dict) else envelope.id
-    return {"ok": True, "message_id": message_id, "id": eid}
+    message_id = client.submit_message(env, routing_hints=routing_hints)
+    return {"ok": True, "message_id": message_id, "id": env["id"]}
 
 
 def receive_envelope(agent_name: str | None = None) -> Optional[Dict[str, Any]]:

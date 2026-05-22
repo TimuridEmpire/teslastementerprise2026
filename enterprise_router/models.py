@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from message_schema import Message
+
+# Router storage and API use the shared enterprise envelope type.
+MessageEnvelope = Message
+
 
 @dataclass
 class RegistrationRequest:
@@ -34,22 +39,6 @@ class AgentRecord:
     active: bool = True
     allowed_senders: list[str] = field(default_factory=list)
     allowed_task_types: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
-class MessageEnvelope:
-    id: str
-    timestamp: str
-    sender: str
-    recipient: str
-    task_type: str
-    context: dict[str, Any] = field(default_factory=dict)
-    payload: dict[str, Any] = field(default_factory=dict)
-    status: str = "pending"
-    error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

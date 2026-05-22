@@ -1,7 +1,5 @@
-import uuid
-import datetime
-
 from agents.advisor_agent import AdvisorAgent
+from message_schema import Message
 
 def run_strategy_simulation():
     print("--- Starting Executive Board Simulation ---")
@@ -12,27 +10,19 @@ def run_strategy_simulation():
     company_strategy = "We are Kanosei, a company focused strictly on software. We do not manufacture hardware."
     board_advisor = AdvisorAgent(name="Advisor", core_strategy=company_strategy)
     
-    # 2. The CEO formulates a plan and wraps it in the strict JSON schema
-    ceo_proposal = {
-        "id": f"req-{uuid.uuid4().hex[:6]}",
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        "sender": "CEO",
-        "recipient": "Advisor",
-        "task_type": "PROPOSE_Q2_ROADMAP",
-        "context": {
-            "quarter": "Q2",
-            "year": 2026
-        },
-        "payload": {
+    ceo_proposal = Message.create(
+        sender="CEO",
+        recipient="Advisor",
+        task_type="PROPOSE_Q2_ROADMAP",
+        context={"quarter": "Q2", "year": 2026},
+        payload={
             "business_goal": "Increase revenue by 15%",
             "initiatives": [
                 "Expand enterprise software tier",
-                "Start manufacturing proprietary servers for clients" # <-- Strategic drift!
-            ]
+                "Start manufacturing proprietary servers for clients",
+            ],
         },
-        "status": "pending",
-        "error": ""
-    }
+    )
     
     # 3. The Advisor cross-references the CEO's plan
     print("\n[SYSTEM] CEO is submitting roadmap to Advisor for review...")
