@@ -26,3 +26,15 @@ enterprise_router.db
 
 # Ignore the runtime audit log
 tesla_audit.jsonl
+
+# Finance and Sales ignores
+
+*.pyc
+*.pyo
+*.pyd
+db/
+logs/
+*.egg-info/
+dist/
+build/
+.DS_Store

@@ -1,11 +1,18 @@
 """
-Shared in-memory message bus: routes standardized agent envelopes to recipients,
-persists each message to the same store as agent_backlog plus a JSONL audit file.
-Agents only need the envelope dict; senders and recipients are identified by name.
+bus/message_bus.py — Upgraded Enterprise Swarm Edition
+
+Routes standardized agent envelopes to recipients, persists each message to the 
+AgentBacklog and a JSONL audit file, enforces distribution tokens, and tracks global FinOps.
+
+Features added for Agentic AI Scale:
+- Broadcast routing (recipient="broadcast")
+- Global session telemetry (tokens/cost tracking)
+- Async-compatible wrappers for high-concurrency event loops
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -35,6 +42,7 @@ def normalize_envelope(raw: Dict[str, Any]) -> Dict[str, Any]:
         "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
         "status": raw.get("status", ""),
         "error": raw.get("error", "") or "",
+        "token_usage": raw.get("token_usage", {}),  # Injected for session telemetry
     }
 
 
@@ -51,6 +59,7 @@ class MessageBus:
     """
     Thread-safe router: send(envelope) persists, logs, then delivers to a registered
     handler or holds the message in a per-recipient mailbox for pull-based agents.
+    Supports async AI scaling and broadcast messaging.
     """
 
     def __init__(
@@ -60,6 +69,7 @@ class MessageBus:
         distribution_tokens: Optional["CeoDistributionTokenRegistry"] = None,
         enforce_distribution_tokens: bool = False,
     ):
+        # Persistence & Gating
         self._backlog = backlog or AgentBacklog()
         self._json_log_path = (
             json_log_path if json_log_path is not None else message_bus_jsonl_path()
@@ -68,11 +78,25 @@ class MessageBus:
         self._enforce_distribution_tokens = bool(
             enforce_distribution_tokens and distribution_tokens is not None
         )
+        
+        # Thread Safety & State
         self._lock = threading.Lock()
         self._persist_lock = threading.Lock()
         self._handlers: Dict[str, Handler] = {}
         self._mailboxes: DefaultDict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
+        self._known_agents: set[str] = set()  # Track all known agents for broadcasting
         self._logger = get_agent_logger("MessageBus")
+
+        # Global Session Telemetry
+        self._stats_lock = threading.Lock()
+        self._session_stats = {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tokens": 0,
+            "total_cost_usd": 0.0,
+            "messages_sent": 0,
+            "broadcasts_sent": 0
+        }
 
     @property
     def json_log_path(self) -> str:
@@ -81,10 +105,30 @@ class MessageBus:
     def register(self, agent_name: str, handler: Optional[Handler] = None) -> None:
         """Register a synchronous handler for direct delivery. Pass None to clear."""
         with self._lock:
+            self._known_agents.add(agent_name)
             if handler is None:
                 self._handlers.pop(agent_name, None)
             else:
                 self._handlers[agent_name] = handler
+        self._logger.info("[BUS] Registered agent: %s", agent_name)
+
+    def get_session_stats(self) -> dict:
+        """Retrieve global token and cost metrics."""
+        with self._stats_lock:
+            return dict(self._session_stats)
+
+    def _update_telemetry(self, envelope: Dict[str, Any], is_broadcast: bool = False) -> None:
+        """Passively aggregate global token usage across the enterprise swarm."""
+        tu = envelope.get("token_usage", {})
+        with self._stats_lock:
+            self._session_stats["messages_sent"] += 1
+            if is_broadcast:
+                self._session_stats["broadcasts_sent"] += 1
+            if tu:
+                self._session_stats["total_input_tokens"] += tu.get("input_tokens", 0)
+                self._session_stats["total_output_tokens"] += tu.get("output_tokens", 0)
+                self._session_stats["total_tokens"] += tu.get("total_tokens", 0)
+                self._session_stats["total_cost_usd"] += tu.get("cost_usd", 0.0)
 
     def _persist(self, envelope: Dict[str, Any]) -> None:
         with self._persist_lock:
@@ -93,51 +137,58 @@ class MessageBus:
 
     def send(self, message: Dict[str, Any]) -> Optional[Any]:
         """
-        Route a message: normalize, persist (SQLite backlog + JSONL), log, then deliver.
-        Returns handler return value if a handler ran, else None (message queued in mailbox).
-
-        When ``enforce_distribution_tokens`` is on and a registry is configured, envelopes
-        that name a **registered** scenario in ``context.distribution_scenario`` or
-        ``context.prompt_scenario`` consume tokens from the **sender** before persistence.
+        Route a message: normalize, check tokens, persist, track telemetry, then deliver.
+        Supports recipient="broadcast" for swarm-wide alerts.
         """
-        # Import locally to avoid circular imports if ceo_distribution_tokens ever imports the bus.
+        # Import locally to avoid circular imports
         from ceo_distribution_tokens import (
             DistributionTokenError,
             resolve_distribution_scenario,
         )
 
         envelope = normalize_envelope(message)
+        recipient = envelope.get("recipient", "")
+        is_broadcast = (recipient.lower() == "broadcast")
 
+        # 1. Enterprise Token Gating (Active Defense)
         if self._enforce_distribution_tokens and self._distribution_tokens is not None:
             scenario = resolve_distribution_scenario(envelope)
             if scenario and self._distribution_tokens.is_registered(scenario):
                 sender = (envelope.get("sender") or "").strip()
+                cost = self._distribution_tokens.cost_for(scenario)
+                
+                # Multiply cost by number of agents if broadcasting
+                if is_broadcast:
+                    cost *= max(1, len(self._known_agents))
+
                 if not sender:
                     raise DistributionTokenError(
                         "Token-gated send requires a non-empty sender.",
-                        scenario=scenario,
-                        sender=sender,
-                        balance=0,
-                        cost=self._distribution_tokens.cost_for(scenario),
+                        scenario=scenario, sender=sender, balance=0, cost=cost
                     )
-                cost = self._distribution_tokens.cost_for(scenario)
                 if not self._distribution_tokens.try_consume(sender, scenario, cost):
                     bal = self._distribution_tokens.balance(sender, scenario)
                     raise DistributionTokenError(
                         f"Insufficient distribution tokens for scenario {scenario!r}: "
                         f"holder {sender!r} has {bal}, need {cost}.",
-                        scenario=scenario,
-                        sender=sender,
-                        balance=bal,
-                        cost=cost,
+                        scenario=scenario, sender=sender, balance=bal, cost=cost
                     )
 
+        # 2. Persistence & Telemetry (Passive Tracking)
         self._persist(envelope)
+        self._update_telemetry(envelope, is_broadcast)
         log_inter_agent_message(self._logger, envelope, direction="ROUTING")
 
-        recipient = envelope.get("recipient") or ""
+        # 3. Delivery Logic
+        if is_broadcast:
+            return self._handle_broadcast(envelope)
+        else:
+            return self._handle_point_to_point(envelope, recipient)
+
+    def _handle_point_to_point(self, envelope: Dict[str, Any], recipient: str) -> Optional[Any]:
         with self._lock:
             handler = self._handlers.get(recipient)
+            self._known_agents.add(recipient)  # Implicit discovery
 
         if handler:
             try:
@@ -163,15 +214,60 @@ class MessageBus:
         )
         return None
 
+    def _handle_broadcast(self, envelope: Dict[str, Any]) -> Dict[str, Any]:
+        """Deliver to all known agents. Returns a dict of responses from sync handlers."""
+        results = {}
+        with self._lock:
+            targets = list(self._known_agents)
+            handlers_snapshot = dict(self._handlers)
+
+        for agent in targets:
+            agent_envelope = dict(envelope, recipient=agent, original_recipient="broadcast")
+            if agent in handlers_snapshot:
+                try:
+                    results[agent] = handlers_snapshot[agent](agent_envelope)
+                except Exception as exc:
+                    self._logger.error("Broadcast handler failed for %s: %s", agent, exc)
+            else:
+                with self._lock:
+                    self._mailboxes[agent].append(agent_envelope)
+                    
+        self._logger.info(
+            "[BROADCAST DELIVERED] %s -> %d agents | id=%s | task=%s",
+            envelope.get("sender"),
+            len(targets),
+            envelope.get("id"),
+            envelope.get("task_type"),
+        )
+        return results
+
     def receive(self, agent_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Pop one message for this agent from the mailbox (FIFO). Returns None if empty.
-        """
+        """Pop one message for this agent from the mailbox (FIFO). Returns None if empty."""
         with self._lock:
             q = self._mailboxes.get(agent_name)
             if not q:
                 return None
             return q.popleft()
+
+    # --- Async Compatibility Wrappers ---
+
+    async def async_send(self, message: Dict[str, Any]) -> Optional[Any]:
+        """Non-blocking send for async AI agents yielding to the event loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.send, message)
+
+    async def async_receive(self, agent_name: str, timeout: float = 30.0, poll_interval: float = 0.1) -> Optional[Dict[str, Any]]:
+        """Async pull with timeout (emulates async Queues safely on top of sync threading)."""
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
+        
+        while (loop.time() - start_time) < timeout:
+            msg = self.receive(agent_name)
+            if msg:
+                return msg
+            await asyncio.sleep(poll_interval)
+            
+        return None
 
     def peek_mailbox(self, agent_name: str) -> List[Dict[str, Any]]:
         """Snapshot of queued messages for an agent (does not remove)."""
