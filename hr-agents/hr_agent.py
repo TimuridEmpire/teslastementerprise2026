@@ -26,6 +26,39 @@ from message_bus import MessageBus
 inter_store = inter_agent_store_from_env(mirror_sqlite=False)
 message_bus = MessageBus(backlog=agentBacklog)
 
+# Local in-memory table of current agent counts (protected by a lock for threads)
+agent_counts_lock = threading.Lock()
+agent_counts = {
+    "PM Agent": 0,
+    "Engineering Agent": 0,
+    "Marketing Agent": 0,
+    "Sales Agent": 0,
+    "Finance Agent": 0,
+    "Legal Compliance Agent": 0,
+    "Advisor": 0,
+    "CEO": 1,
+    "HR": 1,
+}
+
+@tool
+def update_agent_table(new_counts: dict):
+    """
+    Update the local agent_counts mapping with values from new_counts.
+    Only keys present in new_counts are modified; others remain unchanged.
+    Returns the updated agent_counts snapshot.
+    """
+    if not isinstance(new_counts, dict):
+        raise TypeError("new_counts must be a dict mapping agent names to integers")
+    with agent_counts_lock:
+        for k, v in new_counts.items():
+            if k not in agent_counts:
+                # add unknown agent types, but coerce name to str
+                agent_counts[str(k)] = int(v)
+            else:
+                agent_counts[k] = int(v)
+        # return a shallow copy to avoid external mutation
+        return dict(agent_counts)
+
 
 @tool
 def setAgentTheadcount(counts: dict = None, default: int = 2):
