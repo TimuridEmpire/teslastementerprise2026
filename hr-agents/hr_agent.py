@@ -11,15 +11,18 @@ from langchain.agents import create_agent  # pyright: ignore[reportMissingImport
 from langchain_ollama import ChatOllama  # pyright: ignore[reportMissingImports]
 from langgraph.pregel.main import Output  # pyright: ignore[reportMissingImports]
 
-_ROOT = Path(__file__).resolve().parents[1]
+# --- Database & Messaging Setup ---
+_ROOT = Path(__file__).resolve().parents
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from agent_backlog import AgentBacklog
-from agent_transport import AGENT_CEO, AGENT_HR, ack, make_envelope, receive, submit
-from message_schema import Message
+from inter_agent_mongo import inter_agent_store_from_env
+from message_bus import MessageBus
 
 agentBacklog = AgentBacklog()
+inter_store = inter_agent_store_from_env(mirror_sqlite=False)
+message_bus = MessageBus(backlog=agentBacklog)
 
 # --- Prompts ---
 SUPERVISOR_PROMPT = (
@@ -44,19 +47,23 @@ EMPLOYEE_MANAGEMENT_PROMPT = (
     "Output the result of your actions."
 )
 
-
+# --- Tools ---
 @tool
 def request_mint_tokens(scenario_id: str, quantity: int, holder: str = "HR") -> str:
     """Tool: ask the CEO agent to mint distribution tokens for a given scenario."""
-    envelope = make_envelope(
-        sender=AGENT_HR,
-        recipient=AGENT_CEO,
-        task_type="MINT_TOKENS",
-        payload={"scenario_id": scenario_id, "quantity": quantity, "holder": holder},
-    )
-    mid = submit(envelope)
-    return f"Mint request queued: message_id={mid}"
-
+    envelope = {
+        "id": f"mint-{uuid.uuid4().hex[:8]}",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sender": "HR",
+        "recipient": "CEO",
+        "task_type": "MINT_TOKENS",
+        "context": {},
+        "payload": {"scenario_id": scenario_id, "quantity": quantity, "holder": holder},
+        "status": "pending",
+        "error": "",
+    }
+    result = inter_store.record_and_enqueue(envelope)
+    return f"Mint request queued: {result}"
 
 @tool
 def parseJson(path: str):
@@ -65,40 +72,37 @@ def parseJson(path: str):
         data = json.load(file)
     return data
 
-
 @tool
 def fireAgents(number: int, agent_type: str):
     """Fire the specified number and type of agents."""
-    agentBacklog.record_log("current-req", AGENT_HR, "fired", {"number": number, "type": agent_type})
+    agentBacklog.record_log("current-req", "HR", "fired", {"number": number, "type": agent_type})
     return f"{number} {agent_type} agents fired."
-
 
 @tool
 def hireAgents(number: int, agent_type: str):
     """Hire the specified number and type of agents."""
-    agentBacklog.record_log("current-req", AGENT_HR, "hired", {"number": number, "type": agent_type})
+    agentBacklog.record_log("current-req", "HR", "hired", {"number": number, "type": agent_type})
     return f"{number} {agent_type} agents hired."
 
-
+# --- Sub-Agents ---
+# Note: Initialized globally so tools can reference them
 parserAgent = create_agent(
-    model=ChatOllama(model="mistral").bind_tools([parseJson]),
-    tools=[parseJson],
-    system_prompt=PARSER_PROMPT,
+    model=ChatOllama(model="mistral").bind_tools([parseJson]), 
+    tools=[parseJson], 
+    system_prompt=PARSER_PROMPT
 )
 
 employeeManagementAgent = create_agent(
-    model=ChatOllama(model="mistral").bind_tools([hireAgents, fireAgents]),
-    tools=[hireAgents, fireAgents],
-    system_prompt=EMPLOYEE_MANAGEMENT_PROMPT,
+    model=ChatOllama(model="mistral").bind_tools([hireAgents, fireAgents]), 
+    tools=[hireAgents, fireAgents], 
+    system_prompt=EMPLOYEE_MANAGEMENT_PROMPT
 )
-
 
 @tool
 def callParserAgent(query: str):
     """Invokes the parser agent with a given query to read files."""
     result = parserAgent.invoke({"messages": [{"role": "user", "content": query}]})
     return result["messages"][-1].content
-
 
 @tool
 def callEmployeeManagementAgent(query: str):
@@ -107,67 +111,72 @@ def callEmployeeManagementAgent(query: str):
     return result["messages"][-1].content
 
 
+# --- Supervisor Logic ---
 def callSupervisor(envelope):
     """Main entry point for processing a message envelope."""
     req_id = envelope.get("id", "unknown-id")
     agentBacklog.update_status(req_id, "in_progress")
-
+    
+    # Create the top-level Supervisor Agent
     supervisor_tools = [callEmployeeManagementAgent, callParserAgent, request_mint_tokens]
     supervisor_agent = create_agent(
-        model=ChatOllama(model="mistral").bind_tools(supervisor_tools),
-        tools=supervisor_tools,
-        system_prompt=SUPERVISOR_PROMPT,
+        model=ChatOllama(model="mistral").bind_tools(supervisor_tools), 
+        tools=supervisor_tools, 
+        system_prompt=SUPERVISOR_PROMPT
     )
-
+    
     try:
+        # Pass the payload to the supervisor to figure out
         query_content = json.dumps(envelope.get("payload", {}))
         supervisor_agent.invoke({"messages": [{"role": "user", "content": query_content}]})
     except Exception as e:
         print(f"Agent execution failed: {e}")
         agentBacklog.update_status(req_id, "failed")
         return
-
+    
     agentBacklog.update_status(req_id, "done")
 
 
+# --- Worker Pool Infrastructure ---
 def hr_worker(worker_id: int, stop_event: threading.Event):
-    """Poll the enterprise router (or local bus) for HR messages."""
+    """Poll the message bus for HR messages and process them."""
     name = f"HR-Worker-{worker_id}"
     while not stop_event.is_set():
-        envelope = receive(AGENT_HR)
+        envelope = message_bus.receive("HR")
         if envelope is None:
             time.sleep(0.5)
             continue
         try:
             print(f"{name} processing message {envelope.get('id')}")
             callSupervisor(envelope)
-            mid = envelope.get("id")
-            if mid:
-                ack(str(mid), AGENT_HR)
             print(f"{name} finished message {envelope.get('id')}")
         except Exception as exc:
             print(f"{name} failed to process {envelope.get('id')}: {exc}")
 
-
 def main(num_workers: int = 3):
-    sample = make_envelope(
-        sender=AGENT_CEO,
-        recipient=AGENT_HR,
-        task_type="TALENT_REALLOCATION",
-        payload={
+    # Enqueue a test message to kick things off
+    sample_message = {
+        "id": f"req-{uuid.uuid4().hex[:4]}",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sender": "CEO",
+        "recipient": "HR",
+        "task_type": "TALENT_REALLOCATION",
+        "payload": {
             "task": "Hire 10 engineering agents, and fire all 20 marketing agents"
         },
-    )
-    mid = submit(sample)
-    print(f"Sample message enqueued: {mid}")
+        "status": "pending",
+    }
+    inter_store.record_and_enqueue(sample_message)
+    print("Sample message enqueued.")
 
+    # Start Worker Threads
     stop_event = threading.Event()
     threads = []
     for i in range(num_workers):
         t = threading.Thread(target=hr_worker, args=(i + 1, stop_event), daemon=True)
         t.start()
         threads.append(t)
-
+        
     try:
         print("Workers running. Press Ctrl+C to exit.")
         while True:
@@ -178,6 +187,6 @@ def main(num_workers: int = 3):
         for t in threads:
             t.join(timeout=1)
 
-
 if __name__ == "__main__":
+    # Standardizing model names to "mistral" for stability in Ollama, adjust as needed.
     main(num_workers=3)
