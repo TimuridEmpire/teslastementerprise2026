@@ -13,16 +13,54 @@ import requests  # pyright: ignore[reportMissingModuleSource]
 
 from message_schema import Message
 
+JsonResponse = Dict[str, Any] | list[Any]
+
+
+def router_base_url() -> str | None:
+    url = (
+        os.getenv("ENTERPRISE_ROUTER_API_URL")
+        or os.getenv("ENTERPRISE_ROUTER_URL")
+        or ""
+    ).strip()
+    return url.rstrip("/") if url else None
+
+
+def router_agent_name() -> str | None:
+    name = (
+        os.getenv("ENTERPRISE_ROUTER_AGENT_NAME")
+        or os.getenv("ENTERPRISE_AGENT_NAME")
+        or ""
+    ).strip()
+    return name or None
+
+
+def router_api_key(agent_name: str | None = None) -> str | None:
+    resolved_agent = agent_name or router_agent_name()
+    agent_key = ""
+    if resolved_agent:
+        agent_key = os.getenv(f"{resolved_agent.upper()}_AGENT_API_KEY", "")
+    key = (
+        os.getenv("ENTERPRISE_ROUTER_AGENT_API_KEY")
+        or os.getenv("ENTERPRISE_AGENT_API_KEY")
+        or agent_key
+        or ""
+    ).strip()
+    return key or None
+
+
+def router_configured() -> bool:
+    return bool(router_base_url() and router_agent_name() and router_api_key())
+
 
 class EnterpriseRouterClient:
     """Small HTTP client for the shared enterprise_router FastAPI service."""
 
     def __init__(
         self,
-        *,
         base_url: str,
         agent_name: str,
         api_key: str,
+        *,
         timeout_s: float = 10.0,
         session: Any | None = None,
     ) -> None:
@@ -39,15 +77,10 @@ class EnterpriseRouterClient:
         agent_name: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> "EnterpriseRouterClient":
-        resolved_agent = agent_name or os.getenv("ENTERPRISE_ROUTER_AGENT_NAME", "HR")
-        key_env = f"{resolved_agent.upper()}_AGENT_API_KEY"
-        resolved_key = (
-            api_key
-            or os.getenv("ENTERPRISE_ROUTER_AGENT_API_KEY")
-            or os.getenv(key_env, "")
-        )
+        resolved_agent = agent_name or router_agent_name() or "HR"
+        resolved_key = api_key or router_api_key(resolved_agent) or ""
         return cls(
-            base_url=os.getenv("ENTERPRISE_ROUTER_API_URL", "http://localhost:8000"),
+            base_url=router_base_url() or "http://localhost:8000",
             agent_name=resolved_agent,
             api_key=resolved_key,
             timeout_s=float(os.getenv("ENTERPRISE_ROUTER_TIMEOUT_S", "10")),
@@ -78,12 +111,23 @@ class EnterpriseRouterClient:
             raise ValueError("Router response did not include a message_id.")
         return message_id
 
+    def submit_message(
+        self,
+        envelope: Dict[str, Any] | Message,
+        *,
+        routing_hints: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        body = envelope.to_dict() if isinstance(envelope, Message) else dict(envelope)
+        return self.submit_envelope(body, routing_hints=routing_hints)
+
     def fetch_next(self, recipient: Optional[str] = None) -> Optional[Dict[str, Any]]:
         target = recipient or self.agent_name
         data = self._post("/messages/fetch-next", {"recipient": target})
         if not data:
             return None
-        envelope = data.get("envelope")
+        envelope = data.get("envelope") or data.get("message")
+        if envelope is None and data.get("id"):
+            envelope = data
         if envelope is None:
             return None
         if not isinstance(envelope, dict):
@@ -91,11 +135,33 @@ class EnterpriseRouterClient:
         Message.validate_envelope(envelope)
         return envelope
 
+    def peek(self, limit: int = 10) -> list[Dict[str, Any]]:
+        data = self._request(
+            "get",
+            "/messages/peek",
+            {"recipient": self.agent_name, "limit": limit},
+            headers=self._agent_headers(),
+        )
+        if not isinstance(data, list):
+            return []
+        envelopes: list[Dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            envelope = item.get("envelope") or item.get("message")
+            if isinstance(envelope, dict):
+                Message.validate_envelope(envelope)
+                envelopes.append(envelope)
+        return envelopes
+
     def ack_message(self, message_id: str, recipient: Optional[str] = None) -> Dict[str, Any]:
         return self._post(
             f"/messages/{message_id}/ack",
             {"recipient": recipient or self.agent_name},
         )
+
+    def ack(self, message_id: str, recipient: Optional[str] = None) -> None:
+        self.ack_message(message_id, recipient)
 
     def nack_message(
         self,
@@ -109,6 +175,12 @@ class EnterpriseRouterClient:
             {"recipient": recipient or self.agent_name, "reason": reason},
         )
 
+    def nack(self, message_id: str, reason: str, recipient: Optional[str] = None) -> None:
+        self.nack_message(message_id, recipient, reason=reason)
+
+    def pending_count(self) -> int:
+        return len(self.peek(limit=500))
+
     def request_registration(
         self,
         *,
@@ -118,7 +190,7 @@ class EnterpriseRouterClient:
         endpoint: str | None = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return self._request(
+        data = self._request(
             "post",
             "/registrations/request",
             {
@@ -131,9 +203,11 @@ class EnterpriseRouterClient:
             },
             headers={"Content-Type": "application/json"},
         )
+        return self._require_object(data, "/registrations/request")
 
     def _post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self._request("post", path, body, headers=self._agent_headers())
+        data = self._request("post", path, body, headers=self._agent_headers())
+        return self._require_object(data, path)
 
     def _request(
         self,
@@ -142,15 +216,28 @@ class EnterpriseRouterClient:
         body: Dict[str, Any],
         *,
         headers: Dict[str, str],
-    ) -> Dict[str, Any]:
-        response = getattr(self.session, method)(
-            f"{self.base_url}{path}",
-            json=body,
-            headers=headers,
-            timeout=self.timeout_s,
-        )
+    ) -> JsonResponse:
+        if method.lower() == "get":
+            response = self.session.get(
+                f"{self.base_url}{path}",
+                params=body,
+                headers=headers,
+                timeout=self.timeout_s,
+            )
+        else:
+            response = getattr(self.session, method)(
+                f"{self.base_url}{path}",
+                json=body,
+                headers=headers,
+                timeout=self.timeout_s,
+            )
         response.raise_for_status()
         data = response.json()
+        if not isinstance(data, (dict, list)):
+            raise ValueError(f"Expected JSON object or list response from {path}.")
+        return data
+
+    def _require_object(self, data: JsonResponse, path: str) -> Dict[str, Any]:
         if not isinstance(data, dict):
             raise ValueError(f"Expected JSON object response from {path}.")
         return data

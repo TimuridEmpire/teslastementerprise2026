@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# cSpell:words Ollama ollama LangChain langchain
+
 import os
 import sys
 import threading

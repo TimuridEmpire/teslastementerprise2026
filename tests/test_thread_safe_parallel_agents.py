@@ -14,6 +14,7 @@ from agents.advisor_agent import AdvisorAgent
 from multithreaded_agent import ParallelAgentRuntime, send_messages_parallel
 from thread_safe_agent import ThreadSafeAgentMixin
 from message_bus import MessageBus
+from message_schema import Message, normalize_envelope
 
 
 class RecordingAgent(ThreadSafeAgentMixin):
@@ -45,28 +46,24 @@ class TestParallelThreadSafeAgents(unittest.TestCase):
         runtime.register(alpha, beta)
         self.addCleanup(runtime.unregister_all)
 
-        env_a = {
-            "id": "m-a",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "sender": "Orchestrator",
-            "recipient": "AlphaDept",
-            "task_type": "PING",
-            "context": {},
-            "payload": {},
-            "status": "pending",
-            "error": "",
-        }
-        env_b = {
-            "id": "m-b",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "sender": "Orchestrator",
-            "recipient": "BetaDept",
-            "task_type": "PING",
-            "context": {},
-            "payload": {},
-            "status": "pending",
-            "error": "",
-        }
+        env_a = normalize_envelope(
+            Message.create(
+                sender="Orchestrator",
+                recipient="AlphaDept",
+                task_type="PING",
+                message_id="m-a",
+            )
+        )
+        env_a["timestamp"] = "2026-01-01T00:00:00Z"
+        env_b = normalize_envelope(
+            Message.create(
+                sender="Orchestrator",
+                recipient="BetaDept",
+                task_type="PING",
+                message_id="m-b",
+            )
+        )
+        env_b["timestamp"] = "2026-01-01T00:00:00Z"
         results = send_messages_parallel(self.bus, [env_a, env_b])
         self.assertEqual(results[0], {"agent": "AlphaDept", "echo_id": "m-a"})
         self.assertEqual(results[1], {"agent": "BetaDept", "echo_id": "m-b"})
@@ -80,19 +77,18 @@ class TestParallelThreadSafeAgents(unittest.TestCase):
         self.addCleanup(runtime.unregister_all)
 
         batch = [
-            {
-                "id": f"id-{i}",
-                "timestamp": "2026-01-01T00:00:00Z",
-                "sender": "X",
-                "recipient": "SoloDept",
-                "task_type": "PING",
-                "context": {},
-                "payload": {},
-                "status": "pending",
-                "error": "",
-            }
+            normalize_envelope(
+                Message.create(
+                    sender="X",
+                    recipient="SoloDept",
+                    task_type="PING",
+                    message_id=f"id-{i}",
+                )
+            )
             for i in range(20)
         ]
+        for env in batch:
+            env["timestamp"] = "2026-01-01T00:00:00Z"
         send_messages_parallel(self.bus, batch, max_workers=8)
         self.assertEqual(len(agent.received_ids), 20)
         self.assertEqual(set(agent.received_ids), {f"id-{i}" for i in range(20)})
@@ -104,19 +100,19 @@ class TestParallelThreadSafeAgents(unittest.TestCase):
         self.addCleanup(runtime.unregister_all)
 
         envs = [
-            {
-                "id": f"rev-{i}",
-                "timestamp": "2026-01-01T00:00:00Z",
-                "sender": "CEO",
-                "recipient": "Advisor",
-                "task_type": "STRATEGY_REVIEW_REQUEST",
-                "context": {},
-                "payload": {"note": f"item {i}"},
-                "status": "pending",
-                "error": "",
-            }
+            normalize_envelope(
+                Message.create(
+                    sender="CEO",
+                    recipient="Advisor",
+                    task_type="STRATEGY_REVIEW_REQUEST",
+                    payload={"note": f"item {i}"},
+                    message_id=f"rev-{i}",
+                )
+            )
             for i in range(10)
         ]
+        for env in envs:
+            env["timestamp"] = "2026-01-01T00:00:00Z"
         results = send_messages_parallel(self.bus, envs, max_workers=4)
         self.assertEqual(len(results), 10)
         for r in results:

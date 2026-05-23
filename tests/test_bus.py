@@ -1,13 +1,12 @@
 # test_bus.py — Message bus integration test (same envelope schema as test_advisor / test_messaging)
 import os
-import uuid
-import datetime
 
 from agent_backlog import AgentBacklog
 from agent_logger import log_inter_agent_message
 from agents.advisor_agent import AdvisorAgent
 from agents.ceo_agent import CeoAgent
 from message_bus import MessageBus
+from message_schema import Message
 
 
 def run_bus_simulation():
@@ -45,20 +44,16 @@ def run_bus_simulation():
     bus.register("Advisor", board_advisor.evaluate_ceo_decision)
     bus.register("CEO", ceo_inbox)
 
-    ceo_proposal = {
-        "id": f"req-{uuid.uuid4().hex[:6]}",
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "sender": "CEO",
-        "recipient": "Advisor",
-        "task_type": "PROPOSE_NEW_FEATURE",
-        "context": {"platform": "Spotify"},
-        "payload": {
+    ceo_proposal = Message.create(
+        sender="CEO",
+        recipient="Advisor",
+        task_type="PROPOSE_NEW_FEATURE",
+        context={"platform": "Spotify"},
+        payload={
             "business_goal": "Increase user engagement",
             "feature": "AI kids voice detection for auto-filtering",
         },
-        "status": "pending",
-        "error": "",
-    }
+    )
 
     print("\n[SYSTEM] CEO is sending a proposal to the bus (recipient=Advisor)...")
     advisory_reply = bus.send(ceo_proposal)

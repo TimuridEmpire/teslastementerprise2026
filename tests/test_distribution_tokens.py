@@ -2,9 +2,6 @@ from __future__ import annotations
 
 """Tests for CEO distribution token registry and MessageBus gating."""
 
-import datetime
-import uuid
-
 import pytest
 
 from agent_backlog import AgentBacklog
@@ -15,20 +12,18 @@ from ceo_distribution_tokens import (
     resolve_distribution_scenario,
 )
 from message_bus import MessageBus
+from message_schema import Message, normalize_envelope
 
 
 def _envelope(*, sender: str, recipient: str, task_type: str, context: dict | None = None):
-    return {
-        "id": f"req-{uuid.uuid4().hex[:6]}",
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "sender": sender,
-        "recipient": recipient,
-        "task_type": task_type,
-        "context": context or {},
-        "payload": {},
-        "status": "pending",
-        "error": "",
-    }
+    return normalize_envelope(
+        Message.create(
+            sender=sender,
+            recipient=recipient,
+            task_type=task_type,
+            context=context,
+        )
+    )
 
 
 def test_resolve_scenario_from_context():

@@ -1,8 +1,8 @@
-import uuid
-import datetime
 from typing import Any, Dict
 
 from agent_logger import get_agent_logger, log_inter_agent_message
+from agent_transport import AGENT_CEO, make_envelope, submit
+from message_schema import EnvelopeInput, Message
 
 from thread_safe_agent import ThreadSafeAgentMixin
 
@@ -26,7 +26,7 @@ class AdvisorAgent(ThreadSafeAgentMixin):
             f"{preview}..." if len(self.core_strategy) > 50 else self.core_strategy,
         )
 
-    def evaluate_ceo_decision(self, ceo_proposal_message):
+    def evaluate_ceo_decision(self, ceo_proposal_message: EnvelopeInput):
         """
         Takes a JSON message from the CEO, evaluates the payload against the 
         core strategy, and returns an advisory response message.
@@ -34,15 +34,19 @@ class AdvisorAgent(ThreadSafeAgentMixin):
         with self._agent_lock:
             return self._evaluate_ceo_decision_unlocked(ceo_proposal_message)
 
-    def _evaluate_ceo_decision_unlocked(self, ceo_proposal_message: Dict[str, Any]) -> Dict[str, Any]:
+    def _evaluate_ceo_decision_unlocked(self, ceo_proposal_message: EnvelopeInput) -> Dict[str, Any]:
         self.logger.info("Received proposal from CEO for strategic review.")
         
         # 1. Log the incoming message from the CEO
         log_inter_agent_message(self.logger, ceo_proposal_message, direction="RECEIVING")
         
-        # Extract the CEO's proposed payload to analyze
-        proposed_action = ceo_proposal_message.get("payload", {})
-        task_type = ceo_proposal_message.get("task_type", "UNKNOWN")
+        proposal = (
+            ceo_proposal_message
+            if isinstance(ceo_proposal_message, Message)
+            else Message.from_dict(ceo_proposal_message)
+        )
+        proposed_action = proposal.payload
+        task_type = proposal.task_type or "UNKNOWN"
         
         # 2. Perform the evaluation (Simulated AI Logic)
         # In a real app, you would pass the self.core_strategy and the proposed_action to an LLM prompt here.
@@ -54,29 +58,25 @@ class AdvisorAgent(ThreadSafeAgentMixin):
             is_aligned = False
             feedback = "WARNING: Proposed hardware manufacturing violates the core software focus strategy."
 
-        # 3. Construct the Advisor's response using the strict JSON schema
-        advisory_response = {
-            "id": f"adv-{uuid.uuid4().hex[:6]}",
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-            "sender": self.name,
-            "recipient": ceo_proposal_message.get("sender", "CEO"),
-            "task_type": "STRATEGY_REVIEW_RESULT",
-            "context": {
+        advisory_response = make_envelope(
+            sender=self.name,
+            recipient=proposal.sender or AGENT_CEO,
+            task_type="STRATEGY_REVIEW_RESULT",
+            context={
                 "original_task": task_type,
-                "review_cycle": "pre-execution"
+                "review_cycle": "pre-execution",
             },
-            "payload": {
+            payload={
                 "is_aligned": is_aligned,
                 "assessment": feedback,
-                "recommended_action": "PROCEED" if is_aligned else "REVISE"
+                "recommended_action": "PROCEED" if is_aligned else "REVISE",
             },
-            "status": "done",
-            "error": ""
-        }
-        
-        # 4. Log the outgoing feedback
+            status="done",
+        )
+
         log_inter_agent_message(self.logger, advisory_response, direction="SENDING")
-        
+        submit(advisory_response)
+
         return advisory_response
 
     def on_bus_envelope(self, envelope: Dict[str, Any]) -> Any:

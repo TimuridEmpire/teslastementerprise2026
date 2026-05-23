@@ -15,26 +15,12 @@ from typing import Any, Callable, DefaultDict, Deque, Dict, List, Optional, TYPE
 from agent_backlog import AgentBacklog
 from agent_logger import get_agent_logger, log_inter_agent_message
 from enterprise_paths import message_bus_jsonl_path
+from message_schema import EnvelopeInput, Message, normalize_envelope
 
 if TYPE_CHECKING:
     from ceo_distribution_tokens import CeoDistributionTokenRegistry
 
 Handler = Callable[[Dict[str, Any]], Any]
-
-
-def normalize_envelope(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Fill missing keys so backlog / JSON logs stay aligned with agent_backlog."""
-    return {
-        "id": raw.get("id", ""),
-        "timestamp": raw.get("timestamp", ""),
-        "sender": raw.get("sender", ""),
-        "recipient": raw.get("recipient", ""),
-        "task_type": raw.get("task_type", ""),
-        "context": raw.get("context") if isinstance(raw.get("context"), dict) else {},
-        "payload": raw.get("payload") if isinstance(raw.get("payload"), dict) else {},
-        "status": raw.get("status", ""),
-        "error": raw.get("error", "") or "",
-    }
 
 
 def _append_jsonl(path: str, record: Dict[str, Any]) -> None:
@@ -90,7 +76,7 @@ class MessageBus:
             self._backlog.record_interaction(envelope)
             _append_jsonl(self._json_log_path, envelope)
 
-    def send(self, message: Dict[str, Any]) -> Optional[Any]:
+    def send(self, message: EnvelopeInput) -> Optional[Any]:
         """
         Route a message: normalize, persist (SQLite backlog + JSONL), log, then deliver.
         Returns handler return value if a handler ran, else None (message queued in mailbox).
@@ -183,3 +169,61 @@ class MessageBus:
     def pending_count(self, agent_name: str) -> int:
         with self._lock:
             return len(self._mailboxes.get(agent_name, ()))
+
+
+# ---------------------------------------------------------------------------
+# Cross-service routing via Enterprise Router (when env is configured)
+# ---------------------------------------------------------------------------
+
+_default_bus: MessageBus | None = None
+
+
+def _get_default_bus() -> MessageBus:
+    global _default_bus
+    if _default_bus is None:
+        _default_bus = MessageBus()
+    return _default_bus
+
+
+def send_message(message: Message | dict[str, Any]) -> str | None:
+    """
+    Route a message: enterprise HTTP router when configured, else in-process bus.
+    Returns message id from the router, or the handler result from the local bus.
+    """
+    from enterprise_router_client import EnterpriseRouterClient, router_configured
+
+    envelope = normalize_envelope(message)
+
+    if router_configured():
+        client = EnterpriseRouterClient.from_env()
+        assert client is not None
+        return client.submit_message(envelope)
+
+    _get_default_bus().send(envelope)
+    return envelope.get("id")
+
+
+def get_messages_for(agent_name: str) -> list[dict[str, Any]]:
+    """
+    Drain messages for an agent: peek+fetch via router, or snapshot local mailbox.
+    """
+    from enterprise_router_client import EnterpriseRouterClient, router_configured
+
+    if router_configured():
+        client = EnterpriseRouterClient.from_env()
+        assert client is not None
+        drained: list[dict[str, Any]] = []
+        while True:
+            env = client.fetch_next(agent_name)
+            if not env:
+                break
+            drained.append(env)
+            mid = env.get("id")
+            if mid:
+                try:
+                    client.ack(str(mid), agent_name)
+                except Exception:
+                    pass
+        return drained
+
+    return _get_default_bus().peek_mailbox(agent_name)

@@ -7,6 +7,7 @@ import uuid
 import pytest
 
 from enterprise_paths import inter_agent_mongo_uri
+from message_schema import Message, normalize_envelope
 
 
 def _mongo_reachable() -> bool:
@@ -40,18 +41,24 @@ def store():
 
 
 def test_enqueue_receive_fifo(store):
-    e1 = {
-        "id": "m-1",
-        "timestamp": "",
-        "sender": "CEO",
-        "recipient": "HR",
-        "task_type": "TASK",
-        "context": {},
-        "payload": {"n": 1},
-        "status": "pending",
-        "error": "",
-    }
-    e2 = {**e1, "id": "m-2", "payload": {"n": 2}}
+    e1 = normalize_envelope(
+        Message.create(
+            sender="CEO",
+            recipient="HR",
+            task_type="TASK",
+            payload={"n": 1},
+            message_id="m-1",
+        )
+    )
+    e2 = normalize_envelope(
+        Message.create(
+            sender="CEO",
+            recipient="HR",
+            task_type="TASK",
+            payload={"n": 2},
+            message_id="m-2",
+        )
+    )
     assert store.record_and_enqueue(e1)["queued"] is True
     assert store.record_and_enqueue(e2)["queued"] is True
     assert store.pending_count("HR") == 2
@@ -63,17 +70,14 @@ def test_enqueue_receive_fifo(store):
 
 
 def test_duplicate_id_is_idempotent(store):
-    env = {
-        "id": "dup-1",
-        "timestamp": "",
-        "sender": "A",
-        "recipient": "B",
-        "task_type": "T",
-        "context": {},
-        "payload": {},
-        "status": "pending",
-        "error": "",
-    }
+    env = normalize_envelope(
+        Message.create(
+            sender="A",
+            recipient="B",
+            task_type="T",
+            message_id="dup-1",
+        )
+    )
     r1 = store.record_and_enqueue(env)
     r2 = store.record_and_enqueue(env)
     assert r1["queued"] is True

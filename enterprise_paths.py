@@ -3,12 +3,20 @@ Single source of truth for enterprise persistence.
 
 - **SQLite** — internal backlog: ``AgentBacklog`` / ``MessageBus`` (``ENTERPRISE_BACKLOG_DB``).
 - **JSONL** — bus audit file (``ENTERPRISE_MESSAGE_BUS_JSONL``).
-- **MongoDB** — inter-agent HTTP/API hub (``MONGODB_URI``, ``ENTERPRISE_MONGO_INTER_AGENT_DB``); see ``inter_agent_mongo.py``.
+- **MongoDB** — optional queue backend for the enterprise router when ``ENTERPRISE_ROUTER_BACKEND=mongo``.
+- **Enterprise Router HTTP** — cross-service API (``inter_agent_api.py`` / ``enterprise_router.api``).
 
 ENTERPRISE_BACKLOG_DB            — SQLite path (default: <repo>/enterprise_backlog.db)
 ENTERPRISE_MESSAGE_BUS_JSONL     — JSONL path (default: <repo>/enterprise_message_bus.jsonl)
 MONGODB_URI                      — Mongo connection (default: mongodb://localhost:27017/)
 ENTERPRISE_MONGO_INTER_AGENT_DB  — Mongo DB name (default: enterprise_inter_agent)
+ENTERPRISE_ROUTER_URL            — Router base URL for agent HTTP clients
+ENTERPRISE_AGENT_NAME            — This agent's id (X-Agent-Id)
+ENTERPRISE_AGENT_API_KEY         — Bearer token issued by admin
+ENTERPRISE_ROUTER_ADMIN_SECRET   — Admin header for registration / agent setup
+ENTERPRISE_ROUTER_SHARED_SECRET  — Registration request secret
+ENTERPRISE_ROUTER_BACKEND        — sqlite (default) or mongo
+ENTERPRISE_ROUTER_PORT           — API listen port (default 8765)
 """
 
 from __future__ import annotations
