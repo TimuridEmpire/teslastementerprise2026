@@ -28,3 +28,4 @@ enterprise_router.db
 
 # Ignore the runtime audit log
 tesla_audit.jsonl
+graphify-out
