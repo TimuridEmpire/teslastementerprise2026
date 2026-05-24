@@ -24,7 +24,7 @@ This repo now includes `enterprise_router_client.py`, a small adapter for the lo
 
 Recommended flow:
 
-1. Start the UI-Team router API.
+1. Start the Enterprise Router API.
 2. Configure the router with SQLite for local development or MongoDB as the router storage backend.
 3. Register each agent in the router and issue that agent an API key.
 4. Set that key in this repo's environment.
@@ -59,12 +59,12 @@ if envelope:
 
 ### Local website demo
 
-Use this flow to see the router-connected agents on a local `brain-enterprise-lab` website.
+Use this flow to see the router-connected agents on a local website. Replace `<project-root>` with the path to this repository. If your router service lives in a separate checkout, replace `<router-repo>` with that checkout path.
 
-1. Start the UI-Team router API in one terminal:
+1. Start the Enterprise Router API in one terminal:
 
 ```powershell
-cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\UI-Team"
+cd "<router-repo>"
 $env:ENTERPRISE_ROUTER_BACKEND="sqlite"
 $env:ENTERPRISE_ROUTER_DB="enterprise_router_demo.db"
 $env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
@@ -75,7 +75,7 @@ python -m enterprise_router.api
 2. Seed shared agents and queue a CEO -> HR message in another terminal:
 
 ```powershell
-cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
+cd "<project-root>"
 python .\router_demo.py --send-ceo-to-hr
 ```
 
@@ -84,7 +84,7 @@ The script prints `CEO_AGENT_API_KEY`, `HR_AGENT_API_KEY`, and `MANAGER_AGENT_AP
 3. Run the HR worker against the shared router:
 
 ```powershell
-cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
+cd "<project-root>"
 $env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
 $env:ENTERPRISE_AGENT_NAME="HR"
 $env:ENTERPRISE_AGENT_API_KEY="<paste HR_AGENT_API_KEY>"
@@ -94,7 +94,7 @@ python .\hr-agents\hr_agent.py
 4. Run the website locally:
 
 ```powershell
-cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\brain-enterprise-lab"
+cd "<project-root>\website"
 $env:NEXT_PUBLIC_API_URL="http://localhost:8000"
 $env:NEXT_PUBLIC_ADMIN_SECRET="dev-admin-secret"
 $env:NEXT_PUBLIC_MANAGER_API_KEY="<paste MANAGER_AGENT_API_KEY>"
@@ -114,7 +114,7 @@ What you should see:
 6. To test CEO receiving messages, send an HR mint request or a manager intervention addressed to `CEO`, then run a small CEO poll from Python:
 
 ```powershell
-cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
+cd "<project-root>"
 $env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
 $env:ENTERPRISE_AGENT_NAME="CEO"
 $env:ENTERPRISE_AGENT_API_KEY="<paste CEO_AGENT_API_KEY>"
