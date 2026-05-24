@@ -1,7 +1,7 @@
 'use client'
 
 import { notFound } from 'next/navigation'
-import { use, useState } from 'react'
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Crown, Package, Code2, Users, TrendingUp, Megaphone,
@@ -108,8 +108,8 @@ const weeklyData = [
   { day: 'Sun', tasks: 2, msgs: 6 },
 ]
 
-export default function AgentPage({ params }: { params: Promise<{ agent: string }> }) {
-  const { agent: agentId } = use(params)
+export default function AgentPage({ params }: { params: { agent: string } }) {
+  const { agent: agentId } = params
   const agent = AGENTS.find(a => a.id === agentId)
   if (!agent) notFound()
 
