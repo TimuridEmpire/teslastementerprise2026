@@ -11,6 +11,7 @@ import {
   ResponsiveContainer, AreaChart, Area,
 } from 'recharts'
 import { useHealth, useAudit, useQueue } from '@/lib/hooks'
+import { auditToThroughput } from '@/lib/live-metrics'
 
 const ARCH_LAYERS = [
   { label: 'Web UI',            icon: <Globe size={14} />,    color: 'var(--sky)',      detail: 'Next.js 14 · React 18 · Framer Motion' },
@@ -19,12 +20,15 @@ const ARCH_LAYERS = [
   { label: 'Persistence',       icon: <Database size={14} />, color: 'var(--agent-hr)', detail: 'SQLite / MongoDB · message store' },
 ]
 
-// Synthetic latency data
-const latencyData = Array.from({ length: 20 }, (_, i) => ({
-  t: `${i}s`,
-  ui: 10 + Math.round(Math.random() * 8),
-  api: 18 + Math.round(Math.random() * 15),
-}))
+const fallbackThroughputData = [
+  { day: 'T-6', completed: 0, blocked: 0, total: 0 },
+  { day: 'T-5', completed: 0, blocked: 0, total: 0 },
+  { day: 'T-4', completed: 0, blocked: 0, total: 0 },
+  { day: 'T-3', completed: 0, blocked: 0, total: 0 },
+  { day: 'T-2', completed: 0, blocked: 0, total: 0 },
+  { day: 'T-1', completed: 0, blocked: 0, total: 0 },
+  { day: 'now', completed: 0, blocked: 0, total: 0 },
+]
 
 const TABS = ['Overview', 'Audit Log', 'Architecture'] as const
 type Tab = typeof TABS[number]
@@ -34,6 +38,9 @@ export default function ObservabilityPage() {
   const { data: health, loading: healthLoading } = useHealth()
   const { data: audit,  loading: auditLoading  } = useAudit(50)
   const { data: managerQueue } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  const liveThroughput = auditToThroughput(audit, 12)
+  const throughputData = liveThroughput.length ? liveThroughput : fallbackThroughputData
+  const throughputLive = liveThroughput.length > 0
 
   const statusColor = (s: string | undefined) =>
     s === 'ok' || s === 'operational' ? 'var(--green)' : s ? 'var(--amber)' : 'var(--text-3)'
@@ -95,20 +102,23 @@ export default function ObservabilityPage() {
             ))}
           </div>
 
-          {/* Latency chart */}
+          {/* Router throughput chart */}
           <div className="card p-5">
-            <h3 className="text-[13px] font-semibold mb-4" style={{ color: 'var(--text-1)' }}>Response Latency (synthetic)</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Router Throughput</h3>
+              <span className="font-mono text-[10px]" style={{ color: throughputLive ? 'var(--green)' : 'var(--text-3)' }}>{throughputLive ? 'live' : 'waiting for audit'}</span>
+            </div>
             <ResponsiveContainer width="100%" height={160}>
-              <LineChart data={latencyData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+              <LineChart data={throughputData} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
                 <CartesianGrid vertical={false} />
-                <XAxis dataKey="t" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} unit="ms" />
+                <XAxis dataKey="day" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} allowDecimals={false} />
                 <Tooltip
                   contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }}
                   cursor={{ stroke: 'var(--border)' }}
                 />
-                <Line type="monotone" dataKey="ui"  stroke="var(--sky)"    strokeWidth={1.5} dot={false} name="UI" />
-                <Line type="monotone" dataKey="api" stroke="var(--indigo)" strokeWidth={1.5} dot={false} name="API" />
+                <Line type="monotone" dataKey="total" stroke="var(--sky)" strokeWidth={1.5} dot={false} name="Total events" />
+                <Line type="monotone" dataKey="blocked" stroke="var(--red)" strokeWidth={1.5} dot={false} name="Blocked/errors" />
               </LineChart>
             </ResponsiveContainer>
           </div>

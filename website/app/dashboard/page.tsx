@@ -17,8 +17,9 @@ import {
   BUDGET_ALLOCATIONS, AGENT_LOAD, PIPELINE, MESSAGE_FLOW, KANOSEI_WORKFLOWS,
 } from '@/lib/mock-data'
 import { useHealth, useAudit, useQueue } from '@/lib/hooks'
+import { auditToThroughput } from '@/lib/live-metrics'
 import type { AgentId } from '@/lib/types'
-import type { ApiQueueItem } from '@/lib/api-types'
+import type { ApiAuditEvent, ApiQueueItem } from '@/lib/api-types'
 
 // ─── Agent icon map ────────────────────────────────────────────────────────
 const AGENT_ICONS: Record<AgentId, React.ReactNode> = {
@@ -320,7 +321,11 @@ function MessageMatrix() {
 }
 
 // ─── Pipeline Tab ──────────────────────────────────────────────────────────
-function PipelineTab() {
+function PipelineTab({ liveAudit }: { liveAudit: ApiAuditEvent[] | null }) {
+  const liveThroughput = auditToThroughput(liveAudit, 7)
+  const throughputData = liveThroughput.length ? liveThroughput : TASK_THROUGHPUT
+  const throughputLive = liveThroughput.length > 0
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* Workflows */}
@@ -407,11 +412,14 @@ function PipelineTab() {
         {/* Task throughput */}
         <div className="card" style={{ padding: 22 }}>
           <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Task throughput</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Completed vs blocked · last 7 days</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Router throughput</div>
+              <span style={{ fontSize: 10.5, color: throughputLive ? 'var(--green)' : 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{throughputLive ? 'live' : 'mock'}</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Completed vs blocked router events</div>
           </div>
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={TASK_THROUGHPUT} margin={{ top: 4, right: 0, bottom: 0, left: -24 }} barSize={12} barGap={4}>
+            <BarChart data={throughputData} margin={{ top: 4, right: 0, bottom: 0, left: -24 }} barSize={12} barGap={4}>
               <CartesianGrid vertical={false} />
               <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
               <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
@@ -427,7 +435,10 @@ function PipelineTab() {
 }
 
 // ─── Performance Tab ───────────────────────────────────────────────────────
-function PerformanceTab() {
+function PerformanceTab({ liveAudit }: { liveAudit: ApiAuditEvent[] | null }) {
+  const liveThroughput = auditToThroughput(liveAudit, 7)
+  const completionTrend = liveThroughput.length ? liveThroughput : TASK_THROUGHPUT
+  const completionTrendLive = liveThroughput.length > 0
   const perf = AGENTS.map(a => ({
     id: a.id, name: a.name, role: a.role, color: a.color,
     successRate: a.successRate,
@@ -487,11 +498,14 @@ function PerformanceTab() {
       {/* 7-day completion trend */}
       <div className="card" style={{ padding: 22 }}>
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>7-day completion trend</div>
-          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Tasks closed per day across all agents</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Router completion trend</div>
+            <span style={{ fontSize: 10.5, color: completionTrendLive ? 'var(--green)' : 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{completionTrendLive ? 'live' : 'mock'}</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Ack/submission events across the router</div>
         </div>
         <ResponsiveContainer width="100%" height={160}>
-          <LineChart data={TASK_THROUGHPUT} margin={{ top: 4, right: 0, bottom: 0, left: -24 }}>
+          <LineChart data={completionTrend} margin={{ top: 4, right: 0, bottom: 0, left: -24 }}>
             <CartesianGrid vertical={false} />
             <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
             <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
@@ -520,7 +534,7 @@ type TabId = typeof TABS[number]['id']
 export default function DashboardPage() {
   const [tab, setTab] = useState<TabId>('pulse')
   const { data: health } = useHealth()
-  const { data: audit  } = useAudit(12)
+  const { data: audit  } = useAudit(50)
   const { data: managerQueue } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
 
   return (
@@ -585,8 +599,8 @@ export default function DashboardPage() {
         >
           {tab === 'pulse'        && <PulseTab liveAudit={audit} liveQueue={managerQueue} />}
           {tab === 'distribution' && <DistributionTab />}
-          {tab === 'pipeline'     && <PipelineTab />}
-          {tab === 'performance'  && <PerformanceTab />}
+          {tab === 'pipeline'     && <PipelineTab liveAudit={audit} />}
+          {tab === 'performance'  && <PerformanceTab liveAudit={audit} />}
         </motion.div>
       </AnimatePresence>
     </div>
