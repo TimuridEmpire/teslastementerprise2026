@@ -9,6 +9,7 @@ currently has no worker file for them, so this launcher reports them as missing.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import subprocess
 import sys
@@ -26,6 +27,7 @@ class AgentSpec:
     router_name: str
     key_envs: tuple[str, ...]
     implemented: bool = True
+    required_modules: tuple[str, ...] = ()
 
 
 AGENTS: dict[str, AgentSpec] = {
@@ -33,7 +35,7 @@ AGENTS: dict[str, AgentSpec] = {
     "pm": AgentSpec("PM", "PM", ("PM_AGENT_API_KEY", "PRODUCT_AGENT_API_KEY", "NEXT_PUBLIC_PM_API_KEY", "NEXT_PUBLIC_PRODUCT_API_KEY")),
     "marketing": AgentSpec("Marketing", "Marketing", ("MARKETING_AGENT_API_KEY", "NEXT_PUBLIC_MARKETING_API_KEY")),
     "hr": AgentSpec("HR", "HR", ("HR_AGENT_API_KEY", "NEXT_PUBLIC_HR_API_KEY")),
-    "engineering": AgentSpec("Engineering", "Engineering", ("ENGINEERING_AGENT_API_KEY", "NEXT_PUBLIC_ENGINEERING_API_KEY")),
+    "engineering": AgentSpec("Engineering", "Engineering", ("ENGINEERING_AGENT_API_KEY", "NEXT_PUBLIC_ENGINEERING_API_KEY"), required_modules=("crewai", "crewai_tools")),
     "advisor": AgentSpec("Strategic Advisor", "Strategic Advisor", ("ADVISOR_AGENT_API_KEY", "STRATEGIC_ADVISOR_AGENT_API_KEY", "NEXT_PUBLIC_ADVISOR_API_KEY")),
     "sales": AgentSpec("Sales", "Sales", ("SALES_AGENT_API_KEY", "NEXT_PUBLIC_SALES_API_KEY"), implemented=False),
     "finance": AgentSpec("Finance", "Finance", ("FINANCE_AGENT_API_KEY", "NEXT_PUBLIC_FINANCE_API_KEY"), implemented=False),
@@ -64,6 +66,14 @@ def resolve_key(spec: AgentSpec) -> tuple[str | None, str | None]:
         if value:
             return env_name, value
     return None, None
+
+
+def missing_modules(spec: AgentSpec) -> list[str]:
+    return [
+        module
+        for module in spec.required_modules
+        if importlib.util.find_spec(module) is None
+    ]
 
 
 def list_status(selected: list[str]) -> int:
@@ -106,6 +116,11 @@ def main() -> int:
             continue
         if not spec.implemented:
             print(f"Skipping {spec.display_name}: no runtime worker exists in this codebase yet.")
+            skipped = True
+            continue
+        missing = missing_modules(spec)
+        if missing:
+            print(f"Skipping {spec.display_name}: missing Python package(s): {', '.join(missing)}.")
             skipped = True
             continue
         env_name, api_key = resolve_key(spec)

@@ -58,7 +58,11 @@ RUNNER_ENV_NAMES = {
 
 def main() -> int:
     settings = RouterSettings.from_env()
-    base = f"http://{settings.api_host}:{settings.api_port}"
+    base = (
+        os.getenv("ENTERPRISE_ROUTER_URL")
+        or os.getenv("ENTERPRISE_ROUTER_API_URL")
+        or f"http://{settings.api_host}:{settings.api_port}"
+    ).rstrip("/")
     admin = settings.admin_secret
     headers = {"X-Admin-Secret": admin, "Content-Type": "application/json"}
 
