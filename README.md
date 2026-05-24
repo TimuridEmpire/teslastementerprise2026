@@ -90,90 +90,60 @@ A healthy local router returns JSON similar to:
 {"status":"ok","backend":"sqlite"}
 ```
 
-3. Register the default agents and issue API keys:
+3. Register the default agents and write local key files:
 
 ```powershell
 cd "<project-root>"
 $env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
 $env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
-python .\scripts\bootstrap_router_agents.py
+python .\scripts\setup_local_runtime.py --write-website-env
 ```
 
-The script prints two useful blocks:
+This writes local-only secret files:
 
-- `Website .env.local values`: values for the Next.js website.
-- `Agent runner env values`: values for `run_agents.py`.
+- `.router_keys.ps1`: PowerShell environment variables for agent workers.
+- `.router_keys.cmd`: Command Prompt environment variables for agent workers.
+- `website/.env.local`: Next.js environment variables for the website.
+- `website/.env.local.generated`: generated website env backup.
 
-4. Update `website/.env.local` using the `Website .env.local values` block.
+These files are ignored by Git and should not be committed.
 
-At minimum it should contain:
-
-```dotenv
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_ADMIN_SECRET=dev-admin-secret
-NEXT_PUBLIC_MANAGER_API_KEY=<manager key from bootstrap output>
-NEXT_PUBLIC_CEO_API_KEY=<CEO key from bootstrap output>
-NEXT_PUBLIC_PM_API_KEY=<PM key from bootstrap output>
-NEXT_PUBLIC_MARKETING_API_KEY=<Marketing key from bootstrap output>
-NEXT_PUBLIC_HR_API_KEY=<HR key from bootstrap output>
-NEXT_PUBLIC_ENGINEERING_API_KEY=<Engineering key from bootstrap output>
-NEXT_PUBLIC_ADVISOR_API_KEY=<Strategic Advisor key from bootstrap output>
-```
-
-Optional website keys for registered-but-not-yet-implemented workers:
-
-```dotenv
-NEXT_PUBLIC_SALES_API_KEY=<Sales key from bootstrap output>
-NEXT_PUBLIC_FINANCE_API_KEY=<Finance key from bootstrap output>
-```
-
-5. In the second terminal, set the `Agent runner env values` printed by bootstrap.
-
-PowerShell example:
+4. Load the generated worker keys:
 
 ```powershell
 cd "<project-root>"
-$env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
-$env:CEO_AGENT_API_KEY="<CEO key from bootstrap output>"
-$env:PM_AGENT_API_KEY="<PM key from bootstrap output>"
-$env:MARKETING_AGENT_API_KEY="<Marketing key from bootstrap output>"
-$env:HR_AGENT_API_KEY="<HR key from bootstrap output>"
-$env:ENGINEERING_AGENT_API_KEY="<Engineering key from bootstrap output>"
-$env:ADVISOR_AGENT_API_KEY="<Strategic Advisor key from bootstrap output>"
+. .\.router_keys.ps1
 ```
 
-Command Prompt example:
+Command Prompt alternative:
 
 ```cmd
 cd "<project-root>"
-set ENTERPRISE_ROUTER_URL=http://localhost:8000
-set CEO_AGENT_API_KEY=<CEO key from bootstrap output>
-set PM_AGENT_API_KEY=<PM key from bootstrap output>
-set MARKETING_AGENT_API_KEY=<Marketing key from bootstrap output>
-set HR_AGENT_API_KEY=<HR key from bootstrap output>
-set ENGINEERING_AGENT_API_KEY=<Engineering key from bootstrap output>
-set ADVISOR_AGENT_API_KEY=<Strategic Advisor key from bootstrap output>
+call .router_keys.cmd
 ```
 
-6. Start all implemented agent workers:
+5. Start the implemented agent workers:
 
 ```powershell
 python .\run_agents.py --agents all
 ```
 
-To check what will run before starting workers:
+Current local worker behavior:
+
+- `CEO`, `PM`, `Marketing`, `HR`, and `Strategic Advisor` should start.
+- `Engineering` is skipped unless `crewai` and `crewai_tools` are installed.
+- `Sales` and `Finance` are skipped because this codebase does not yet include worker implementations for them.
+- PM and Marketing use local file storage by default (`data/pm_storage.json`) so local MongoDB is not required. Set `PM_STORAGE_BACKEND=mongo` only if you intentionally want PM/Marketing domain storage in Mongo.
+
+6. Start the initiation workflow:
 
 ```powershell
-python .\run_agents.py --list
+python .\scripts\initiate_router_workflow.py --no-include-engineering
 ```
 
-To start only selected workers:
+This queues the first messages that make the agents communicate. Without this seed, the workers mostly poll empty queues.
 
-```powershell
-python .\run_agents.py --agents HR,CEO,PM
-```
-
-7. Start the website in a third terminal:
+7. Start the website in another terminal:
 
 ```powershell
 cd "<project-root>\website"
@@ -186,17 +156,84 @@ Open the Next.js URL from the terminal, usually `http://localhost:3000`.
 What you should see:
 
 - `/dashboard` and `/observability` read router health, audit, and queue data.
-- `/messages` and queue-oriented views show live router message state.
-- Agent pages can send manager interventions through `POST /manager/interventions` using `NEXT_PUBLIC_MANAGER_API_KEY`.
-- Running workers fetch queued messages from the router, process them, then ack or nack them.
+- `/observability` shows live audit events and router throughput after the initiation script submits messages.
+- `/messages` shows the live MANAGER queue. It does not show all historical messages.
+- Agent pages show that agent's current inbound queue while messages are still queued.
+- Running workers fetch queued messages, process them, then ack or nack them.
 - Router audit history shows the lifecycle of submitted, fetched, acked, and nacked messages.
+
+### Seeing Agent Responses
+
+Agent responses are not chat bubbles yet. They are router messages and audit events.
+
+Where to look:
+
+```powershell
+# Router audit log
+Invoke-WebRequest -UseBasicParsing "http://localhost:8000/audit?limit=50" -Headers @{ "X-Admin-Secret" = "dev-admin-secret" }
+```
+
+In the website:
+
+- `/observability`: best place to see that messages were submitted, fetched, acked, or nacked.
+- `/messages`: shows the MANAGER queue only.
+- `/agents/<agent>`: shows that agent's live inbound queue if the message has not already been fetched.
+
+Important: once a worker fetches and ack/nacks a message, it leaves the queue. The website currently shows live queues and audit events, not a full conversation transcript. Domain outputs from PM/Marketing are written to local files such as `data/pm_storage.json`, `data/projects.json`, and `data/campaigns.json`.
+
+### What Is Live vs. Mock
+
+Live today:
+
+- Router health (`/health`).
+- Router audit log (`/audit`).
+- Queue views (`/queue/{recipient}`).
+- Router throughput charts derived from audit events.
+- Manager interventions that submit real router messages.
+
+Still mock/demo today:
+
+- Revenue forecast.
+- Budget allocation.
+- Sales pipeline.
+- Capacity/load percentages.
+- Workflow progress cards.
+- Most KPI cards.
+
+Those business visualizations need agents to emit structured business metric events, or the router needs a new `/metrics` endpoint. Right now the router knows message lifecycle data; it does not automatically know revenue, budget, ROI, or staffing capacity.
+
+### How Autonomy Works Right Now
+
+Autonomy is currently message-driven and rule/handler-driven:
+
+- The initiation script submits starter messages as `CEO`.
+- The router stores messages, validates auth/allowlists, computes priority, leases work, and records audit events.
+- Workers poll their own queue.
+- Each worker decides what to do based on `task_type`.
+- Some workers submit follow-up messages. Example: PM receives `DEFINE_Q2_ROADMAP`, creates backlog/project data, then sends `LAUNCH_CAMPAIGN` and `PM_REPORT` to Marketing.
+- Marketing may send `BUDGET_APPROVAL` to CEO or `CAMPAIGN_LAUNCHED` to Sales.
+
+The router does not decide business strategy. It routes and records messages. The agents decide their next actions inside their task handlers.
+
+### Onboarding Page
+
+The website currently redirects `/` to `/dashboard`. That skips onboarding, but onboarding is not what starts the backend system. The backend system starts when:
+
+1. The router is running.
+2. Local keys are generated.
+3. Agent workers are running.
+4. `scripts/initiate_router_workflow.py` submits starter messages.
+
+Skipping onboarding is not why messages fail. It only means the UI opens at the dashboard instead of a guided setup screen.
 
 Common local issues:
 
-- `403 Invalid API key`: the website or agent process is using a stale key. Re-run bootstrap, update `.env.local`, reset the terminal env vars, and restart the affected process.
-- `403 Task type 'MANAGER_INTERVENTION' is not allowed`: the agent was registered with an old allowlist. Re-run `scripts/bootstrap_router_agents.py` against the running router.
+- `403 Invalid API key`: the website or agent process is using a stale key. Re-run `scripts/setup_local_runtime.py --write-website-env`, reload `.router_keys.ps1` or `.router_keys.cmd`, and restart the affected process.
+- `403 Task type 'MANAGER_INTERVENTION' is not allowed`: the agent was registered with an old allowlist. Re-run `scripts/setup_local_runtime.py --write-website-env` against the running router.
 - `WinError 10048` on port `8000`: another router is already running on that port. Stop it or use a different `ENTERPRISE_ROUTER_PORT` and update `NEXT_PUBLIC_API_URL` / `ENTERPRISE_ROUTER_URL` to match.
 - Website still shows old keys after editing `.env.local`: restart `npm run dev`; Next.js reads environment variables at server startup.
+- PM/Marketing try to connect to `localhost:27017`: make sure `PM_STORAGE_BACKEND` is not set to `mongo`, or run MongoDB intentionally.
+
 ## Distribution tokens (CEO-managed)
 
 Governed **scenarios** throttle how many times an agent can complete a **token-gated** message on the bus. Each scenario has a **`cost_per_send`**: one successful `MessageBus.send` that names that scenario in the envelope consumes that many tokens from the **sender's** balance.
