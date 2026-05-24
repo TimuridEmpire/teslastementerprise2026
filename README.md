@@ -35,10 +35,14 @@ Required environment variables for an agent process:
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `ENTERPRISE_ROUTER_URL` | Base URL for the router API | empty |
-| `ENTERPRISE_AGENT_NAME` | Default authenticated agent name | empty |
-| `ENTERPRISE_AGENT_API_KEY` | API key for the authenticated agent | empty |
-| `HR_AGENT_API_KEY` | HR-specific fallback API key | empty |
-| `CEO_AGENT_API_KEY` | CEO-specific fallback API key | empty |
+| `ENTERPRISE_AGENT_NAME` | Default authenticated agent name for one process | empty |
+| `ENTERPRISE_AGENT_API_KEY` | API key for one authenticated agent process | empty |
+| `CEO_AGENT_API_KEY` | CEO worker API key used by `run_agents.py` | empty |
+| `PM_AGENT_API_KEY` | PM worker API key used by `run_agents.py` | empty |
+| `MARKETING_AGENT_API_KEY` | Marketing worker API key used by `run_agents.py` | empty |
+| `HR_AGENT_API_KEY` | HR worker API key used by `run_agents.py` | empty |
+| `ENGINEERING_AGENT_API_KEY` | Engineering worker API key used by `run_agents.py` | empty |
+| `ADVISOR_AGENT_API_KEY` | Strategic Advisor worker API key used by `run_agents.py` | empty |
 | `ENTERPRISE_ROUTER_TIMEOUT_S` | HTTP timeout in seconds | `10` |
 
 `ENTERPRISE_ROUTER_API_URL`, `ENTERPRISE_ROUTER_AGENT_NAME`, and `ENTERPRISE_ROUTER_AGENT_API_KEY` are accepted as compatibility aliases, but new runtime setup should use the baseline names above. `ENTERPRISE_ROUTER_OFFLINE_DEMO=1` is the only supported way to intentionally use local `MessageBus`/legacy Mongo demo paths.
@@ -57,9 +61,11 @@ if envelope:
     client.ack_message(envelope["id"], "Sales")
 ```
 
-### Local website demo
+### Local Website Demo
 
-Use this flow to see the router-connected agents on a local website. Replace `<project-root>` with the path to this repository. If your router service lives in a separate checkout, replace `<router-repo>` with that checkout path.
+Use this flow to run the router, all implemented agent workers, and the website locally. Replace `<project-root>` with the path to this repository. If the router is in a separate checkout, replace `<router-repo>` with that checkout path. Do not commit `.env.local` or real API keys.
+
+The implemented runtime workers are `CEO`, `PM`, `Marketing`, `HR`, `Engineering`, and `Strategic Advisor`. `Sales` and `Finance` are registered with the router/website, but this codebase does not currently include worker implementations for them, so `run_agents.py` reports them as missing and skips them.
 
 1. Start the Enterprise Router API in one terminal:
 
@@ -72,61 +78,128 @@ $env:ENTERPRISE_ROUTER_PORT="8000"
 python -m enterprise_router.api
 ```
 
-2. Seed shared agents and queue a CEO -> HR message in another terminal:
+2. Confirm the router is reachable from a second terminal:
 
 ```powershell
-cd "<project-root>"
-python .\router_demo.py --send-ceo-to-hr
+Invoke-WebRequest -UseBasicParsing http://localhost:8000/health
 ```
 
-The script prints `CEO_AGENT_API_KEY`, `HR_AGENT_API_KEY`, and `MANAGER_AGENT_API_KEY`. Keep those values for the next terminals.
+A healthy local router returns JSON similar to:
 
-3. Run the HR worker against the shared router:
+```json
+{"status":"ok","backend":"sqlite"}
+```
+
+3. Register the default agents and issue API keys:
 
 ```powershell
 cd "<project-root>"
 $env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
-$env:ENTERPRISE_AGENT_NAME="HR"
-$env:ENTERPRISE_AGENT_API_KEY="<paste HR_AGENT_API_KEY>"
-python .\hr-agents\hr_agent.py
+$env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
+python .\scripts\bootstrap_router_agents.py
 ```
 
-4. Run the website locally:
+The script prints two useful blocks:
+
+- `Website .env.local values`: values for the Next.js website.
+- `Agent runner env values`: values for `run_agents.py`.
+
+4. Update `website/.env.local` using the `Website .env.local values` block.
+
+At minimum it should contain:
+
+```dotenv
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_ADMIN_SECRET=dev-admin-secret
+NEXT_PUBLIC_MANAGER_API_KEY=<manager key from bootstrap output>
+NEXT_PUBLIC_CEO_API_KEY=<CEO key from bootstrap output>
+NEXT_PUBLIC_PM_API_KEY=<PM key from bootstrap output>
+NEXT_PUBLIC_MARKETING_API_KEY=<Marketing key from bootstrap output>
+NEXT_PUBLIC_HR_API_KEY=<HR key from bootstrap output>
+NEXT_PUBLIC_ENGINEERING_API_KEY=<Engineering key from bootstrap output>
+NEXT_PUBLIC_ADVISOR_API_KEY=<Strategic Advisor key from bootstrap output>
+```
+
+Optional website keys for registered-but-not-yet-implemented workers:
+
+```dotenv
+NEXT_PUBLIC_SALES_API_KEY=<Sales key from bootstrap output>
+NEXT_PUBLIC_FINANCE_API_KEY=<Finance key from bootstrap output>
+```
+
+5. In the second terminal, set the `Agent runner env values` printed by bootstrap.
+
+PowerShell example:
+
+```powershell
+cd "<project-root>"
+$env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
+$env:CEO_AGENT_API_KEY="<CEO key from bootstrap output>"
+$env:PM_AGENT_API_KEY="<PM key from bootstrap output>"
+$env:MARKETING_AGENT_API_KEY="<Marketing key from bootstrap output>"
+$env:HR_AGENT_API_KEY="<HR key from bootstrap output>"
+$env:ENGINEERING_AGENT_API_KEY="<Engineering key from bootstrap output>"
+$env:ADVISOR_AGENT_API_KEY="<Strategic Advisor key from bootstrap output>"
+```
+
+Command Prompt example:
+
+```cmd
+cd "<project-root>"
+set ENTERPRISE_ROUTER_URL=http://localhost:8000
+set CEO_AGENT_API_KEY=<CEO key from bootstrap output>
+set PM_AGENT_API_KEY=<PM key from bootstrap output>
+set MARKETING_AGENT_API_KEY=<Marketing key from bootstrap output>
+set HR_AGENT_API_KEY=<HR key from bootstrap output>
+set ENGINEERING_AGENT_API_KEY=<Engineering key from bootstrap output>
+set ADVISOR_AGENT_API_KEY=<Strategic Advisor key from bootstrap output>
+```
+
+6. Start all implemented agent workers:
+
+```powershell
+python .\run_agents.py --agents all
+```
+
+To check what will run before starting workers:
+
+```powershell
+python .\run_agents.py --list
+```
+
+To start only selected workers:
+
+```powershell
+python .\run_agents.py --agents HR,CEO,PM
+```
+
+7. Start the website in a third terminal:
 
 ```powershell
 cd "<project-root>\website"
-$env:NEXT_PUBLIC_API_URL="http://localhost:8000"
-$env:NEXT_PUBLIC_ADMIN_SECRET="dev-admin-secret"
-$env:NEXT_PUBLIC_MANAGER_API_KEY="<paste MANAGER_AGENT_API_KEY>"
+npm install
 npm run dev
 ```
 
-5. Open the Next.js URL from the terminal, usually `http://localhost:3000`.
+Open the Next.js URL from the terminal, usually `http://localhost:3000`.
 
 What you should see:
 
-- `/dashboard` and `/observability` can read router health/audit data.
-- `/messages` and queue-oriented views can show shared message state.
-- A CEO -> HR message appears in the router queue before HR processes it.
-- After HR processes it, the message should move through fetched/acked or nacked states in router audit history.
-- Dashboard-originated manager interventions use `POST /manager/interventions` and become normal queued messages.
+- `/dashboard` and `/observability` read router health, audit, and queue data.
+- `/messages` and queue-oriented views show live router message state.
+- Agent pages can send manager interventions through `POST /manager/interventions` using `NEXT_PUBLIC_MANAGER_API_KEY`.
+- Running workers fetch queued messages from the router, process them, then ack or nack them.
+- Router audit history shows the lifecycle of submitted, fetched, acked, and nacked messages.
 
-6. To test CEO receiving messages, send an HR mint request or a manager intervention addressed to `CEO`, then run a small CEO poll from Python:
+Common local issues:
 
-```powershell
-cd "<project-root>"
-$env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
-$env:ENTERPRISE_AGENT_NAME="CEO"
-$env:ENTERPRISE_AGENT_API_KEY="<paste CEO_AGENT_API_KEY>"
-python -c "from agents.ceo_agent import CeoAgent; from ceo_distribution_tokens import CeoDistributionTokenRegistry; ceo=CeoAgent(distribution_registry=CeoDistributionTokenRegistry()); print(ceo.process_one_router_message())"
-```
-
-If the CEO queue has a message, this prints `True` and the router audit log records the fetch and ack/nack lifecycle. If the queue is empty, it prints `False`.
-
-
+- `403 Invalid API key`: the website or agent process is using a stale key. Re-run bootstrap, update `.env.local`, reset the terminal env vars, and restart the affected process.
+- `403 Task type 'MANAGER_INTERVENTION' is not allowed`: the agent was registered with an old allowlist. Re-run `scripts/bootstrap_router_agents.py` against the running router.
+- `WinError 10048` on port `8000`: another router is already running on that port. Stop it or use a different `ENTERPRISE_ROUTER_PORT` and update `NEXT_PUBLIC_API_URL` / `ENTERPRISE_ROUTER_URL` to match.
+- Website still shows old keys after editing `.env.local`: restart `npm run dev`; Next.js reads environment variables at server startup.
 ## Distribution tokens (CEO-managed)
 
-Governed **scenarios** throttle how many times an agent can complete a **token-gated** message on the bus. Each scenario has a **`cost_per_send`**: one successful `MessageBus.send` that names that scenario in the envelope consumes that many tokens from the **sender’s** balance.
+Governed **scenarios** throttle how many times an agent can complete a **token-gated** message on the bus. Each scenario has a **`cost_per_send`**: one successful `MessageBus.send` that names that scenario in the envelope consumes that many tokens from the **sender's** balance.
 
 ### How a send picks a scenario
 
@@ -144,17 +217,17 @@ If enforcement is on and the scenario **is** registered, the sender must have en
 | Concept | Meaning in code |
 |--------|------------------|
 | **Task / scenario** | A registered scenario id (string), e.g. `STANDARD_DELEGATION`. |
-| **Token cost per send** | `cost_per_send` for that scenario (minimum **1**). Each gated send deducts this from the sender’s balance for that scenario. |
+| **Token cost per send** | `cost_per_send` for that scenario (minimum **1**). Each gated send deducts this from the sender's balance for that scenario. |
 | **Per-agent cap** | Not a separate limit: it is whatever balance the CEO **minted** or **transferred** to that agent for that scenario. More sends are allowed only if the CEO increases that balance. |
-| **Total cap (system-wide for one scenario)** | The **sum of all tokens in existence** for that scenario: CEO **mints** into one or more holders; tokens are only destroyed by **consumption** on send. There is no second hidden pool—the minted amount is the supply ceiling until the CEO mints again. |
+| **Total cap (system-wide for one scenario)** | The **sum of all tokens in existence** for that scenario: CEO **mints** into one or more holders; tokens are only destroyed by **consumption** on send. There is no second hidden pool - the minted amount is the supply ceiling until the CEO mints again. |
 
-**Simplest “baseline” task:** one governed bus message (one delivery attempt) for scenario `STANDARD_DELEGATION` with default `cost_per_send = 1` costs **1 token** from the sender’s balance for `STANDARD_DELEGATION`.
+**Simplest "baseline" task:** one governed bus message (one delivery attempt) for scenario `STANDARD_DELEGATION` with default `cost_per_send = 1` costs **1 token** from the sender's balance for `STANDARD_DELEGATION`.
 
 ### Reference allotment (example policy)
 
 The table below is a **project default you can implement** with `CeoDistributionTokenRegistry` + `CeoAgent.mint_distribution_tokens` / `assign_distribution_tokens`. Numbers are not hardcoded; they document the intended budget.
 
-**Scenario: `STANDARD_DELEGATION`** — routine delegations and cross-agent routing that should stay cheap.
+**Scenario: `STANDARD_DELEGATION`** - routine delegations and cross-agent routing that should stay cheap.
 
 | Agent (holder) | Allotted tokens (starting balance) | Notes |
 |----------------|-------------------------------------|--------|
@@ -169,9 +242,9 @@ The table below is a **project default you can implement** with `CeoDistribution
 
 - **`cost_per_send` for `STANDARD_DELEGATION`:** **1** token per gated send.
 - **Total minted supply (cap) for this scenario:** **130** (= sum of the column above). That is the maximum number of token **units** that can ever be spent **if the CEO never mints again**; each send spends `cost_per_send` (so up to **130** successful gated sends at cost 1, distributed by who still has balance).
-- **Per-agent cap:** each row’s allotment is that agent’s **maximum spend** for this scenario until the CEO mints more to them or transfers tokens.
+- **Per-agent cap:** each row's allotment is that agent's **maximum spend** for this scenario until the CEO mints more to them or transfers tokens.
 
-**Scenario: `EXECUTIVE_BROADCAST`** (optional, higher impact) — fewer, more expensive sends.
+**Scenario: `EXECUTIVE_BROADCAST`** (optional, higher impact) - fewer, more expensive sends.
 
 | Agent | Allotted tokens |
 |-------|-----------------|
@@ -179,7 +252,7 @@ The table below is a **project default you can implement** with `CeoDistribution
 | PM | 3 |
 
 - **`cost_per_send`:** **3** (each gated send burns 3 tokens).
-- **Total minted supply for this scenario:** **15** token-units → at most **5** gated sends if only CEO sends (`15 / 3`), or a mix of sends as long as balances allow.
+- **Total minted supply for this scenario:** **15** token-units -> at most **5** gated sends if only CEO sends (`15 / 3`), or a mix of sends as long as balances allow.
 
 ### Wiring (summary)
 
@@ -317,3 +390,4 @@ What to do to start working and pick up exactly where you left off:
 What to do to end your work session
 
 - Deactivate you env: `deactivate`
+

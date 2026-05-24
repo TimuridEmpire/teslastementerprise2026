@@ -9,9 +9,11 @@ from .service import EnterpriseRouter
 
 try:  # pragma: no cover - optional dependency
     from fastapi import Depends, FastAPI, Header, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
 except ImportError:  # pragma: no cover - optional dependency
     FastAPI = None
+    CORSMiddleware = None
     BaseModel = object
     Depends = Header = Field = HTTPException = None
 
@@ -96,6 +98,18 @@ def create_app(settings: RouterSettings | None = None):
         shared_secret=settings.shared_secret,
     )
     app = FastAPI(title="Enterprise Router API", version="0.2.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+        ],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def handle_router_error(exc: Exception) -> None:
         if isinstance(exc, AccessError):

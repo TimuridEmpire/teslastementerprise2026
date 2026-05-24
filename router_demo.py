@@ -74,8 +74,8 @@ def register_agent(
 
 def seed_agents(base_url: str, admin_secret: str) -> Dict[str, str]:
     agents = [
-        ("CEO", "CEO", 1, 100, ["TALENT_REALLOCATION", "MINT_TOKENS", "CEO_PING"]),
-        ("HR", "HR", 2, 70, ["TALENT_REALLOCATION"]),
+        ("CEO", "CEO", 1, 100, ["TALENT_REALLOCATION", "MINT_TOKENS", "CEO_PING", "MANAGER_INTERVENTION"]),
+        ("HR", "HR", 2, 70, ["TALENT_REALLOCATION", "MANAGER_INTERVENTION"]),
         ("MANAGER", "MANAGER", 2, 95, []),
     ]
     keys: Dict[str, str] = {}
