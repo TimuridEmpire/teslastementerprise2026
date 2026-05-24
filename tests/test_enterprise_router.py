@@ -50,6 +50,52 @@ def test_submit_fetch_ack(router: EnterpriseRouter):
     assert router.fetch_next("HR") is None
 
 
+def test_queue_item_to_dict_matches_website_ready_contract(router: EnterpriseRouter):
+    env = _envelope("CEO", "HR", "TALENT_REALLOCATION")
+    env.context = {
+        "provenance_source": "ceo_agent",
+        "provenance_agent": "CEO",
+        "provenance_trust_level": 95,
+    }
+    router.submit_message(
+        env,
+        RoutingHints(priority=7, ttl_seconds=600, dedupe_key="talent-1"),
+    )
+
+    item = router.fetch_next("HR")
+
+    assert item is not None
+    assert item.to_dict() == {
+        "queue_id": item.queue_id,
+        "message_id": item.message_id,
+        "recipient": "HR",
+        "envelope": env.to_dict(),
+        "computed_priority": 7,
+        "attempt_count": 0,
+        "lease_until": item.lease_until,
+        "delivery_state": "leased",
+        "blocked_reason": "",
+        "enqueued_at": item.enqueued_at,
+        "ttl_expires_at": item.ttl_expires_at,
+        "visible_at": item.visible_at,
+        "provenance_source": "ceo_agent",
+        "provenance_agent": "CEO",
+        "provenance_trust_level": 95,
+        "ttl_seconds": 600,
+        "dedupe_key": "talent-1",
+    }
+
+
+def test_urgency_hint_maps_to_computed_priority(router: EnterpriseRouter):
+    env = _envelope("CEO", "HR", "TALENT_REALLOCATION")
+    router.submit_message(env, RoutingHints.from_mapping({"urgency": "high"}))
+
+    item = router.fetch_next("HR")
+
+    assert item is not None
+    assert item.to_dict()["computed_priority"] == 150
+
+
 def test_registration_flow(router: EnterpriseRouter):
     name = router.request_registration(
         RegistrationRequest(

@@ -89,11 +89,11 @@ export default function SettingsPage() {
         <h1 style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-1)', letterSpacing: '-0.02em' }}>Settings</h1>
         <p style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 4 }}>
           Manage your Kanosei backend connection and API credentials.
-          Changes here apply in the current session only — update{' '}
+          Changes here apply in the current browser session. Configure your runtime environment using{' '}
           <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11, background: 'var(--card)', padding: '1px 5px', borderRadius: 4 }}>
-            .env.local
+            .env.local.example
           </code>{' '}
-          to make them permanent.
+          as the template.
         </p>
       </div>
 
@@ -130,7 +130,7 @@ export default function SettingsPage() {
       <Section icon={<Key size={14} />} title="Authentication">
         <Field
           label="Admin Secret"
-          desc="Matches ROUTER_ADMIN_SECRET on the backend. Required for agent registration."
+          desc="Matches ENTERPRISE_ROUTER_ADMIN_SECRET on the backend. Required for agent registration."
           value={adminSecret.value}
           show={adminSecret.show}
           onToggleShow={() => setAdminSecret(s => ({ ...s, show: !s.show }))}
@@ -148,15 +148,15 @@ export default function SettingsPage() {
         />
       </Section>
 
-      {/* .env.local instructions */}
+      {/* environment instructions */}
       <Section icon={<Settings size={14} />} title="Permanent Configuration">
         <p style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 14, lineHeight: 1.6 }}>
-          Add these to <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11, background: 'var(--card)', padding: '1px 5px', borderRadius: 4 }}>brain-enterprise-lab/.env.local</code> to persist across sessions:
+          Set these in the website runtime environment. Use <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11, background: 'var(--card)', padding: '1px 5px', borderRadius: 4 }}>website/.env.local.example</code> as the non-secret template:
         </p>
         <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 16px', fontFamily: 'var(--font-mono)', fontSize: 11.5, lineHeight: 1.8, color: 'var(--text-2)' }}>
           <div><span style={{ color: 'var(--text-4)' }}># Backend URL</span></div>
           <div><span style={{ color: 'var(--green)' }}>NEXT_PUBLIC_API_URL</span>=<span style={{ color: 'var(--primary-2)' }}>{apiUrl.value || 'http://localhost:8000'}</span></div>
-          <div style={{ marginTop: 4 }}><span style={{ color: 'var(--text-4)' }}># Admin secret (matches ROUTER_ADMIN_SECRET)</span></div>
+          <div style={{ marginTop: 4 }}><span style={{ color: 'var(--text-4)' }}># Admin secret (matches ENTERPRISE_ROUTER_ADMIN_SECRET)</span></div>
           <div><span style={{ color: 'var(--green)' }}>NEXT_PUBLIC_ADMIN_SECRET</span>=<span style={{ color: 'var(--primary-2)' }}>{adminSecret.value || 'changeme'}</span></div>
           <div style={{ marginTop: 4 }}><span style={{ color: 'var(--text-4)' }}># MANAGER agent API key</span></div>
           <div><span style={{ color: 'var(--green)' }}>NEXT_PUBLIC_MANAGER_API_KEY</span>=<span style={{ color: 'var(--primary-2)' }}>{managerKey.value || '<paste key here>'}</span></div>
@@ -166,7 +166,7 @@ export default function SettingsPage() {
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
         {saved && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: 'var(--green)', fontFamily: 'var(--font-mono)' }}>
-            <Check size={11} /> Changes noted — update .env.local to persist
+            <Check size={11} /> Changes noted
           </span>
         )}
         <button className="btn btn-primary" onClick={handleSave} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

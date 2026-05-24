@@ -20,12 +20,12 @@ CEO Agent is the central decision-maker. It delegates tasks, resolves conflicts,
 
 ## Shared Router Integration
 
-This repo now includes `enterprise_router_client.py`, a small adapter for the shared UI-Team `enterprise_router` FastAPI service. New agents should use this adapter for cross-repo or cloud communication instead of writing directly to MongoDB or sharing a SQLite file.
+This repo now includes `enterprise_router_client.py`, a small adapter for the local `enterprise_router` FastAPI service. Runtime agent-to-agent communication must use this router instead of writing directly to MongoDB, sharing a SQLite file, or using the local `MessageBus`.
 
 Recommended flow:
 
 1. Start the UI-Team router API.
-2. Configure the router with SQLite for local development or MongoDB Atlas for cloud persistence.
+2. Configure the router with SQLite for local development or MongoDB as the router storage backend.
 3. Register each agent in the router and issue that agent an API key.
 4. Set that key in this repo's environment.
 5. Agents call the router API to send, fetch, ack, and nack messages.
@@ -34,14 +34,16 @@ Required environment variables for an agent process:
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `ENTERPRISE_ROUTER_API_URL` | Base URL for the UI-Team router API | `http://localhost:8000` |
-| `ENTERPRISE_ROUTER_AGENT_NAME` | Default authenticated agent name | `HR` |
-| `ENTERPRISE_ROUTER_AGENT_API_KEY` | API key for the authenticated agent | empty |
+| `ENTERPRISE_ROUTER_URL` | Base URL for the router API | empty |
+| `ENTERPRISE_AGENT_NAME` | Default authenticated agent name | empty |
+| `ENTERPRISE_AGENT_API_KEY` | API key for the authenticated agent | empty |
 | `HR_AGENT_API_KEY` | HR-specific fallback API key | empty |
 | `CEO_AGENT_API_KEY` | CEO-specific fallback API key | empty |
 | `ENTERPRISE_ROUTER_TIMEOUT_S` | HTTP timeout in seconds | `10` |
 
-The HR worker in `hr-agents/hr_agent.py` now polls `POST /messages/fetch-next` through `EnterpriseRouterClient`, processes the envelope, then calls `ack` or `nack` on the shared router. The CEO agent in `ceo-agents/ceo_agent.py` has the same router path through `process_one_router_message()` and `send_router_envelope()`. `AgentBacklog` remains useful as a local SQLite execution log, but the shared queue of record is the router API. That lets `brain-enterprise-lab` visualize the same queues and audit events without reading this repo's local files.
+`ENTERPRISE_ROUTER_API_URL`, `ENTERPRISE_ROUTER_AGENT_NAME`, and `ENTERPRISE_ROUTER_AGENT_API_KEY` are accepted as compatibility aliases, but new runtime setup should use the baseline names above. `ENTERPRISE_ROUTER_OFFLINE_DEMO=1` is the only supported way to intentionally use local `MessageBus`/legacy Mongo demo paths.
+
+The HR worker in `hr-agents/hr_agent.py` now polls `POST /messages/fetch-next` through `EnterpriseRouterClient`, processes the envelope, then calls `ack` or `nack` on the shared router. The CEO and Advisor agents have the same router path through `process_one_router_message()`, and PM/Marketing/Engineering use `agent_transport` for send/fetch/ack. `AgentBacklog` remains useful as a local execution log, but the shared queue of record is the router API. The website visualizes the same queues and audit events through FastAPI without reading this repo's local files.
 
 For future agents, reuse the same pattern:
 
@@ -63,9 +65,10 @@ Use this flow to see the router-connected agents on a local `brain-enterprise-la
 
 ```powershell
 cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\UI-Team"
-$env:ROUTER_BACKEND="sqlite"
-$env:SQLITE_DB_PATH="enterprise_router_demo.db"
-$env:ROUTER_ADMIN_SECRET="dev-admin-secret"
+$env:ENTERPRISE_ROUTER_BACKEND="sqlite"
+$env:ENTERPRISE_ROUTER_DB="enterprise_router_demo.db"
+$env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
+$env:ENTERPRISE_ROUTER_PORT="8000"
 python -m enterprise_router.api
 ```
 
@@ -82,8 +85,9 @@ The script prints `CEO_AGENT_API_KEY`, `HR_AGENT_API_KEY`, and `MANAGER_AGENT_AP
 
 ```powershell
 cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
-$env:ENTERPRISE_ROUTER_API_URL="http://localhost:8000"
-$env:HR_AGENT_API_KEY="<paste HR_AGENT_API_KEY>"
+$env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
+$env:ENTERPRISE_AGENT_NAME="HR"
+$env:ENTERPRISE_AGENT_API_KEY="<paste HR_AGENT_API_KEY>"
 python .\hr-agents\hr_agent.py
 ```
 
@@ -111,8 +115,9 @@ What you should see:
 
 ```powershell
 cd "C:\Users\pragy\Documents\High School Work\11th Grade\Internship\teslastementerprise2026"
-$env:ENTERPRISE_ROUTER_API_URL="http://localhost:8000"
-$env:CEO_AGENT_API_KEY="<paste CEO_AGENT_API_KEY>"
+$env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
+$env:ENTERPRISE_AGENT_NAME="CEO"
+$env:ENTERPRISE_AGENT_API_KEY="<paste CEO_AGENT_API_KEY>"
 python -c "from agents.ceo_agent import CeoAgent; from ceo_distribution_tokens import CeoDistributionTokenRegistry; ceo=CeoAgent(distribution_registry=CeoDistributionTokenRegistry()); print(ceo.process_one_router_message())"
 ```
 
@@ -178,7 +183,7 @@ The table below is a **project default you can implement** with `CeoDistribution
 
 ### Wiring (summary)
 
-- Create `CeoDistributionTokenRegistry(executive_name="CEO")`, attach to `CeoAgent` and `MessageBus(..., distribution_tokens=reg, enforce_distribution_tokens=True)`.
+- Create `CeoDistributionTokenRegistry(executive_name="CEO")` and attach it to `CeoAgent`. Token-gated local `MessageBus` examples are offline/demo-only; runtime agent delivery still goes through the Enterprise Router.
 - CEO: `register_distribution_scenario`, `mint_distribution_tokens` (total supply), `assign_distribution_tokens` (per-agent rows in the table).
 - Agents: include `distribution_scenario` or `prompt_scenario` in `context` only when that send should count against the budget.
 
@@ -267,9 +272,9 @@ The `standard_scenario_test.py` script acts as our primary integration test for 
 
 ### Primary Goals of the Test
 1. **Verify the Token Economy:** Ensure the `CeoDistributionTokenRegistry` correctly mints, allocates, and deducts tokens. The test verifies that the CEO can use standard tokens for individual delegations and successfully execute a higher-cost `EXECUTIVE_BROADCAST` token for the final decision.
-2. **Test Asynchronous Routing:** Confirm that the `MessageBus` correctly routes direct messages from the CEO to specific departments, as well as peer-to-peer messages (e.g., HR and Marketing sending cost data directly to Finance without CEO intervention).
+2. **Test Asynchronous Routing:** Confirm that the Enterprise Router correctly routes direct messages from the CEO to specific departments, as well as peer-to-peer messages (e.g., HR and Marketing sending cost data directly to Finance without CEO intervention).
 3. **Validate Schema Compliance:** Ensure every agent communicates using the strict JSON envelope schema without triggering formatting errors.
-4. **Confirm Dual-Persistence:** Verify that every transaction is simultaneously recorded to the cloud (MongoDB Atlas) and local storage (SQLite / JSONL).
+4. **Confirm Router Persistence:** Verify that every transaction is recorded by the Enterprise Router storage backend. SQLite is the local default; MongoDB is supported only behind the router as an optional queue/audit backend.
 
 ### The Execution Process
 When the simulation is triggered, the following workflow occurs automatically:

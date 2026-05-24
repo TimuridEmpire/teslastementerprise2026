@@ -50,6 +50,9 @@ export interface ApiEnvelope {
 
 // ─── Queue item (QueuedMessage from service) ──────────────────────────────────
 export interface ApiQueueItem {
+  queue_id:                string
+  message_id:              string
+  recipient:               string
   envelope:               ApiEnvelope
   computed_priority:      number
   attempt_count:          number
@@ -61,6 +64,17 @@ export interface ApiQueueItem {
   provenance_trust_level: number | null
   ttl_seconds:            number | null
   dedupe_key:             string | null
+  enqueued_at:            string | null
+  ttl_expires_at:         string | null
+  visible_at:             string | null
+}
+
+export type ApiQueueItemWire = Partial<ApiQueueItem> & {
+  message?: Partial<ApiEnvelope>
+  priority?: number
+  state?: string
+  attempts?: number
+  reason?: string | null
 }
 
 // ─── Audit event ──────────────────────────────────────────────────────────────

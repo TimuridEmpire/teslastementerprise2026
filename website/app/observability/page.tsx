@@ -10,7 +10,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, AreaChart, Area,
 } from 'recharts'
-import { useHealth, useAudit } from '@/lib/hooks'
+import { useHealth, useAudit, useQueue } from '@/lib/hooks'
 
 const ARCH_LAYERS = [
   { label: 'Web UI',            icon: <Globe size={14} />,    color: 'var(--sky)',      detail: 'Next.js 14 · React 18 · Framer Motion' },
@@ -33,6 +33,7 @@ export default function ObservabilityPage() {
   const [tab, setTab] = useState<Tab>('Overview')
   const { data: health, loading: healthLoading } = useHealth()
   const { data: audit,  loading: auditLoading  } = useAudit(50)
+  const { data: managerQueue } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
 
   const statusColor = (s: string | undefined) =>
     s === 'ok' || s === 'operational' ? 'var(--green)' : s ? 'var(--amber)' : 'var(--text-3)'
@@ -81,7 +82,7 @@ export default function ObservabilityPage() {
             {[
               { label: 'API Status',  value: healthLoading ? '…' : (health?.status ?? 'offline'), icon: <Server size={13} />, color: health ? 'var(--green)' : 'var(--red)' },
               { label: 'Backend',     value: healthLoading ? '…' : (health?.backend ?? '—'),     icon: <Database size={13} />, color: 'var(--indigo-2)' },
-              { label: 'Agents',      value: '7',  icon: <Brain size={13} />,    color: 'var(--agent-product)' },
+              { label: managerQueue !== null ? 'Manager Queue' : 'Agents', value: managerQueue !== null ? String(managerQueue.length) : '7', icon: <Brain size={13} />, color: 'var(--agent-product)' },
               { label: 'Audit Events',value: audit ? String(audit.length) : '—', icon: <Activity size={13} />, color: 'var(--amber)' },
             ].map(card => (
               <div key={card.label} className="card p-4">

@@ -21,13 +21,22 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from message_bus import MessageBus, send_message
+from message_bus import MessageBus
 from message_schema import Message, normalize_envelope
-from enterprise_router_client import router_configured
+from agent_transport import local_fallback_enabled
 
 from thread_safe_agent import SupportsBusRegistration
 
 TopicHandler = Callable[[Dict[str, Any]], None]
+
+
+def _require_offline_demo() -> None:
+    if local_fallback_enabled():
+        return
+    raise RuntimeError(
+        "multithreaded_agent uses the local MessageBus and is limited to explicit "
+        "offline demos/tests. Set ENTERPRISE_ROUTER_OFFLINE_DEMO=1 to run it."
+    )
 
 
 def wait_for_mailboxes_drained(
@@ -42,6 +51,7 @@ def wait_for_mailboxes_drained(
     Use after parallel sends to topic listeners so you do not shut down while mailboxes
     still hold messages — ``bus.send`` can return before ``TopicListener`` threads dequeue.
     """
+    _require_offline_demo()
     channels = list(channel_names)
     if not channels:
         return True
@@ -97,14 +107,13 @@ def send_messages_parallel(
     Return values are ordered to match ``messages`` (same index as input), even though
     sends may complete in a different order.
     """
+    _require_offline_demo()
     msgs = list(messages)
     if not msgs:
         return []
     workers = max_workers or min(32, len(msgs))
 
     def _dispatch(m: Dict[str, Any]) -> Any:
-        if router_configured():
-            return send_message(m)
         return bus.send(m)
 
     results: List[Optional[Any]] = [None] * len(msgs)
@@ -130,6 +139,7 @@ class TopicListener(threading.Thread):
         poll_interval_s: float = 0.05,
         name: Optional[str] = None,
     ):
+        _require_offline_demo()
         super().__init__(name=name or f"TopicListener[{topic}]", daemon=True)
         self._bus = bus
         self._topic = topic
@@ -166,6 +176,7 @@ class ParallelAgentRuntime:
     """
 
     def __init__(self, bus: MessageBus):
+        _require_offline_demo()
         self._bus = bus
         self._agents: List[SupportsBusRegistration] = []
 
@@ -186,6 +197,7 @@ class MultiTopicAgentCoordinator:
     """
 
     def __init__(self, bus: MessageBus):
+        _require_offline_demo()
         self._bus = bus
         self._listeners: List[TopicListener] = []
 
@@ -208,6 +220,7 @@ class MultiTopicAgentCoordinator:
 
 def _demo() -> None:
     """Run a small in-process demo: three topics, parallel sends, concurrent listeners."""
+    _require_offline_demo()
     # Uses the same enterprise backlog + JSONL as other agents (see enterprise_paths).
     bus = MessageBus()
 

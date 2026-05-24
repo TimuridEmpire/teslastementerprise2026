@@ -2,6 +2,7 @@ from typing import Any, Dict
 
 from agent_logger import get_agent_logger, log_inter_agent_message
 from agent_transport import AGENT_CEO, make_envelope, submit
+from enterprise_router_client import EnterpriseRouterClient
 from message_schema import EnvelopeInput, Message
 
 from thread_safe_agent import ThreadSafeAgentMixin
@@ -92,3 +93,26 @@ class AdvisorAgent(ThreadSafeAgentMixin):
             "task_type": task or "UNKNOWN",
             "note": "Advisor acknowledged; no review handler for this task_type.",
         }
+
+    def process_one_router_message(
+        self,
+        *,
+        router_client: EnterpriseRouterClient | None = None,
+        recipient: str | None = None,
+    ) -> bool:
+        """Fetch, process, and ack/nack one Advisor message from the enterprise router."""
+        target = recipient or self.name
+        client = router_client or EnterpriseRouterClient.from_env(agent_name=target)
+        envelope = client.fetch_next(target)
+        if envelope is None:
+            return False
+
+        message_id = str(envelope.get("id", ""))
+        try:
+            self.on_bus_envelope(envelope)
+        except Exception as exc:
+            client.nack_message(message_id, target, reason=str(exc))
+            return True
+
+        client.ack_message(message_id, target)
+        return True

@@ -52,6 +52,21 @@ def router_configured() -> bool:
     return bool(router_base_url() and router_agent_name() and router_api_key())
 
 
+def router_missing_config(agent_name: str | None = None) -> list[str]:
+    missing: list[str] = []
+    resolved_agent = agent_name or router_agent_name()
+    if not router_base_url():
+        missing.append("ENTERPRISE_ROUTER_API_URL or ENTERPRISE_ROUTER_URL")
+    if not resolved_agent:
+        missing.append("ENTERPRISE_ROUTER_AGENT_NAME or ENTERPRISE_AGENT_NAME")
+    if not router_api_key(resolved_agent):
+        missing.append(
+            "ENTERPRISE_ROUTER_AGENT_API_KEY, ENTERPRISE_AGENT_API_KEY, "
+            "or <AGENT>_AGENT_API_KEY"
+        )
+    return missing
+
+
 class EnterpriseRouterClient:
     """Small HTTP client for the shared enterprise_router FastAPI service."""
 
@@ -77,13 +92,24 @@ class EnterpriseRouterClient:
         agent_name: Optional[str] = None,
         api_key: Optional[str] = None,
     ) -> "EnterpriseRouterClient":
-        resolved_agent = agent_name or router_agent_name() or "HR"
-        resolved_key = api_key or router_api_key(resolved_agent) or ""
-        return cls(
-            base_url=router_base_url() or "http://localhost:8000",
-            agent_name=resolved_agent,
-            api_key=resolved_key,
-            timeout_s=float(os.getenv("ENTERPRISE_ROUTER_TIMEOUT_S", "10")),
+        resolved_agent = agent_name or router_agent_name()
+        resolved_key = api_key or router_api_key(resolved_agent)
+        base_url = router_base_url()
+        missing = router_missing_config(resolved_agent)
+        if resolved_key:
+            missing = [item for item in missing if not item.startswith("ENTERPRISE_ROUTER_AGENT_API_KEY")]
+        if not missing and resolved_agent and resolved_key and base_url:
+            return cls(
+                base_url=base_url,
+                agent_name=resolved_agent,
+                api_key=resolved_key,
+                timeout_s=float(os.getenv("ENTERPRISE_ROUTER_TIMEOUT_S", "10")),
+            )
+        raise RuntimeError(
+            "Missing Enterprise Router configuration: "
+            + ", ".join(missing)
+            + ". Runtime agent communication must use the Enterprise Router; "
+            "set ENTERPRISE_ROUTER_OFFLINE_DEMO=1 only for local demos/tests."
         )
 
     def submit_envelope(
@@ -121,13 +147,12 @@ class EnterpriseRouterClient:
         return self.submit_envelope(body, routing_hints=routing_hints)
 
     def fetch_next(self, recipient: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        target = recipient or self.agent_name
-        data = self._post("/messages/fetch-next", {"recipient": target})
-        if not data:
+        item = self.fetch_next_item(recipient)
+        if not item:
             return None
-        envelope = data.get("envelope") or data.get("message")
-        if envelope is None and data.get("id"):
-            envelope = data
+        envelope = item.get("envelope") or item.get("message")
+        if envelope is None and item.get("id"):
+            envelope = item
         if envelope is None:
             return None
         if not isinstance(envelope, dict):
@@ -135,7 +160,24 @@ class EnterpriseRouterClient:
         Message.validate_envelope(envelope)
         return envelope
 
+    def fetch_next_item(self, recipient: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        target = recipient or self.agent_name
+        data = self._post("/messages/fetch-next", {"recipient": target})
+        if not data:
+            return None
+        return self._require_object(data, "/messages/fetch-next")
+
     def peek(self, limit: int = 10) -> list[Dict[str, Any]]:
+        rows = self.peek_items(limit=limit)
+        envelopes: list[Dict[str, Any]] = []
+        for item in rows:
+            envelope = item.get("envelope") or item.get("message")
+            if isinstance(envelope, dict):
+                Message.validate_envelope(envelope)
+                envelopes.append(envelope)
+        return envelopes
+
+    def peek_items(self, limit: int = 10) -> list[Dict[str, Any]]:
         data = self._request(
             "get",
             "/messages/peek",
@@ -144,15 +186,12 @@ class EnterpriseRouterClient:
         )
         if not isinstance(data, list):
             return []
-        envelopes: list[Dict[str, Any]] = []
+        items: list[Dict[str, Any]] = []
         for item in data:
             if not isinstance(item, dict):
                 continue
-            envelope = item.get("envelope") or item.get("message")
-            if isinstance(envelope, dict):
-                Message.validate_envelope(envelope)
-                envelopes.append(envelope)
-        return envelopes
+            items.append(item)
+        return items
 
     def ack_message(self, message_id: str, recipient: Optional[str] = None) -> Dict[str, Any]:
         return self._post(

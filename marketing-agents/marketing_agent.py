@@ -1,5 +1,5 @@
 import os
-from agent_transport import AGENT_CEO, AGENT_SALES, drain_mailbox, submit
+from agent_transport import AGENT_CEO, AGENT_SALES, ack, drain_mailbox, local_fallback_enabled, nack, receive, submit
 from message_schema import Message
 from marketing_tools import plan_campaign, save_campaign, generate_email, generate_image_prompt
 from pm_storage import storage
@@ -17,18 +17,34 @@ class MarketingAgent:
         self.logger = get_agent_logger(self.name)
 
     def run(self):
-        msgs = drain_mailbox(self.name)
+        if local_fallback_enabled():
+            msgs = drain_mailbox(self.name)
+        else:
+            msgs = []
+            while True:
+                msg = receive(self.name)
+                if msg is None:
+                    break
+                msgs.append(msg)
+
         for m in msgs:
             # --- INTEGRATION: Log the received envelope cleanly ---
             log_inter_agent_message(self.logger, m, direction="RECEIVING")
-            
-            task_type = m.get('task_type')
-            if task_type == "LAUNCH_CAMPAIGN":
-                self.handle_launch_campaign(m)
-            elif task_type == "PM_REPORT":
-                self.handle_pm_report(m)
-            else:
-                self.logger.warning(f"MarketingAgent: Unhandled {task_type}")
+
+            try:
+                task_type = m.get('task_type')
+                if task_type == "LAUNCH_CAMPAIGN":
+                    self.handle_launch_campaign(m)
+                elif task_type == "PM_REPORT":
+                    self.handle_pm_report(m)
+                else:
+                    self.logger.warning(f"MarketingAgent: Unhandled {task_type}")
+                if not local_fallback_enabled():
+                    ack(str(m.get("id", "")), self.name)
+            except Exception as exc:
+                if not local_fallback_enabled():
+                    nack(str(m.get("id", "")), self.name, reason=str(exc))
+                raise
 
     def handle_pm_report(self, msg):
         self.logger.info(f"MarketingAgent received PM report: {msg.get('id')}")

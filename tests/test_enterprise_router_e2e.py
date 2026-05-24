@@ -129,7 +129,17 @@ def test_registration_approve_and_message_lifecycle(router_client):
     )
     assert fetch.status_code == 200
     body = fetch.json()
-    assert body["message"]["id"] == env["id"]
+    assert body["envelope"]["id"] == env["id"]
+    assert body["computed_priority"] == 2
+    assert body["delivery_state"] == "leased"
+    assert body["attempt_count"] == 0
+    assert body["lease_until"]
+    assert body["blocked_reason"] == ""
+    assert body["ttl_seconds"] is None
+    assert body["dedupe_key"] is None
+    assert body["provenance_source"] is None
+    assert body["provenance_agent"] is None
+    assert body["provenance_trust_level"] is None
 
     peek = client.get(
         "/messages/peek",
@@ -171,6 +181,67 @@ def test_registration_approve_and_message_lifecycle(router_client):
     )
     assert audit.status_code == 200
     assert len(audit.json()) >= 1
+
+
+def test_peek_and_queue_view_return_consistent_rich_queue_items(router_client):
+    client, settings = router_client
+    admin = settings.admin_secret
+    ceo_key = _register_agent(client, admin, "CEO", "executive")
+    hr_key = _register_agent(client, admin, "HR", "hr")
+
+    env = _envelope("CEO", "HR", "HIRING_REQUEST")
+    env["context"] = {
+        "provenance_source": "ceo_agent",
+        "provenance_agent": "CEO",
+        "provenance_trust_level": 88,
+    }
+    submit = client.post(
+        "/messages",
+        headers=_agent_headers("CEO", ceo_key),
+        json={
+            "message": env,
+            "routing_hints": {
+                "priority": 9,
+                "ttl_seconds": 300,
+                "dedupe_key": "hire-1",
+            },
+        },
+    )
+    assert submit.status_code == 200
+
+    peek = client.get(
+        "/messages/peek",
+        headers=_agent_headers("HR", hr_key),
+        params={"recipient": "HR", "limit": 5},
+    )
+    queue = client.get(
+        "/queue/HR",
+        headers=_agent_headers("HR", hr_key),
+    )
+
+    assert peek.status_code == 200
+    assert queue.status_code == 200
+    assert peek.json() == queue.json()
+    item = peek.json()[0]
+    assert item == {
+        "queue_id": item["queue_id"],
+        "message_id": item["message_id"],
+        "recipient": "HR",
+        "envelope": env,
+        "computed_priority": 9,
+        "attempt_count": 0,
+        "lease_until": None,
+        "delivery_state": "pending",
+        "blocked_reason": "",
+        "enqueued_at": item["enqueued_at"],
+        "ttl_expires_at": item["ttl_expires_at"],
+        "visible_at": item["visible_at"],
+        "provenance_source": "ceo_agent",
+        "provenance_agent": "CEO",
+        "provenance_trust_level": 88,
+        "ttl_seconds": 300,
+        "dedupe_key": "hire-1",
+    }
 
 
 def test_manager_intervention_requires_manager_role(router_client):

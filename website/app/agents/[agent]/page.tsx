@@ -81,6 +81,26 @@ const STATUS_DOT: Record<string, string> = {
   active: 'var(--green)', busy: 'var(--amber)', idle: 'var(--sky)', error: 'var(--red)', offline: 'var(--text-3)',
 }
 
+const ROUTER_AGENT_BY_UI_ID: Record<string, string> = {
+  ceo: 'CEO',
+  product: 'PM',
+  engineering: 'Engineering',
+  hr: 'HR',
+  sales: 'Sales',
+  marketing: 'Marketing',
+  finance: 'Finance',
+}
+
+const ROUTER_AGENT_KEYS: Record<string, string> = {
+  CEO: process.env.NEXT_PUBLIC_CEO_API_KEY ?? '',
+  PM: process.env.NEXT_PUBLIC_PM_API_KEY ?? process.env.NEXT_PUBLIC_PRODUCT_API_KEY ?? '',
+  Engineering: process.env.NEXT_PUBLIC_ENGINEERING_API_KEY ?? '',
+  HR: process.env.NEXT_PUBLIC_HR_API_KEY ?? '',
+  Sales: process.env.NEXT_PUBLIC_SALES_API_KEY ?? '',
+  Marketing: process.env.NEXT_PUBLIC_MARKETING_API_KEY ?? '',
+  Finance: process.env.NEXT_PUBLIC_FINANCE_API_KEY ?? '',
+}
+
 const weeklyData = [
   { day: 'Mon', tasks: 3, msgs: 12 }, { day: 'Tue', tasks: 5, msgs: 18 },
   { day: 'Wed', tasks: 2, msgs: 9 },  { day: 'Thu', tasks: 6, msgs: 21 },
@@ -95,18 +115,32 @@ export default function AgentPage({ params }: { params: Promise<{ agent: string 
 
   const color   = AGENT_COLORS[agent.id as AgentId]
   const workers = WORKER_MAP[agent.id as AgentId] ?? []
-  const routerRecipient = agent.id.toUpperCase()
+  const routerRecipient = ROUTER_AGENT_BY_UI_ID[agent.id] ?? agent.name
+  const routerApiKey = ROUTER_AGENT_KEYS[routerRecipient] ?? ''
 
   const [instruction, setInstruction] = useState('')
   const [sending, setSending]         = useState(false)
   const [sent, setSent]               = useState(false)
   const [sendError, setSendError]     = useState('')
 
-  // Live queue — API key empty by default; skips fetching gracefully
-  const { data: queue } = useQueue(routerRecipient, process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  // Live queue; skips fetching when this agent has no configured key.
+  const { data: queue, enabled: queueEnabled, error: queueError } = useQueue(routerRecipient, routerApiKey)
+  const hasRouterQueue = queue !== null
 
   const agentTasks    = TASKS.filter(t => t.assignedTo === agent.id)
-  const agentMessages = MESSAGES.filter(m => m.sender === agent.id || m.recipient === agent.id)
+  const agentMessages = hasRouterQueue
+    ? queue.map(item => ({
+      id: item.envelope.id,
+      sender: item.envelope.sender.toLowerCase(),
+      recipient: item.envelope.recipient.toLowerCase(),
+      task_type: item.envelope.task_type,
+      status: item.envelope.status,
+      delivery_state: item.delivery_state,
+      computed_priority: item.computed_priority,
+      attempt_count: item.attempt_count,
+      payload: item.envelope.payload,
+    }))
+    : MESSAGES.filter(m => m.sender === agent.id || m.recipient === agent.id)
   const agentActivity = ACTIVITY_FEED.filter(e => e.agentId === agent.id)
 
   const radarData = [
@@ -225,16 +259,19 @@ export default function AgentPage({ params }: { params: Promise<{ agent: string 
           </div>
 
           {/* Live queue (from API) */}
-          {queue && queue.length > 0 && (
+          {hasRouterQueue && (
             <div className="card p-5">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Live Queue</h3>
                 <span className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--green)' }}>
                   <span className="live-dot" style={{ width: 6, height: 6 }} />
-                  {queue.length} pending
+                  {queue.length} {queue.length === 1 ? 'item' : 'items'}
                 </span>
               </div>
               <div className="space-y-2">
+                {queue.length === 0 && (
+                  <div className="text-center py-6 text-[12px]" style={{ color: 'var(--text-3)' }}>Queue is empty</div>
+                )}
                 {queue.slice(0, 5).map(item => (
                   <div
                     key={item.envelope.id}
@@ -249,6 +286,11 @@ export default function AgentPage({ params }: { params: Promise<{ agent: string 
                       <div className="text-[10px] truncate" style={{ color: 'var(--text-3)' }}>
                         {JSON.stringify(item.envelope.payload).slice(0, 60)}
                       </div>
+                      {item.blocked_reason && (
+                        <div className="text-[10px] truncate mt-0.5" style={{ color: 'var(--amber)' }}>
+                          {item.blocked_reason}
+                        </div>
+                      )}
                     </div>
                     <span
                       className="badge flex-shrink-0"
@@ -259,7 +301,7 @@ export default function AgentPage({ params }: { params: Promise<{ agent: string 
                         fontSize: 9,
                       }}
                     >
-                      p:{item.computed_priority}
+                      {item.delivery_state} / p:{item.computed_priority}
                     </span>
                   </div>
                 ))}
@@ -328,8 +370,16 @@ export default function AgentPage({ params }: { params: Promise<{ agent: string 
 
           {/* Recent messages */}
           <div className="card p-5">
-            <h3 className="text-[13px] font-semibold mb-4" style={{ color: 'var(--text-1)' }}>Recent Messages</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Recent Messages</h3>
+              <span className="text-[10.5px] font-mono" style={{ color: hasRouterQueue ? 'var(--green)' : 'var(--text-3)' }}>
+                {hasRouterQueue ? 'live inbound' : queueEnabled && queueError ? 'mock fallback' : 'mock'}
+              </span>
+            </div>
             <div className="space-y-2">
+              {agentMessages.length === 0 && (
+                <div className="text-center py-6 text-[12px]" style={{ color: 'var(--text-3)' }}>No recent messages</div>
+              )}
               {agentMessages.slice(0, 4).map((msg, i) => {
                 const isSender = msg.sender === agent.id
                 const other    = AGENTS.find(a => a.id === (isSender ? msg.recipient : msg.sender))

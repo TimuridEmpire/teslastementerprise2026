@@ -5,7 +5,8 @@
  */
 import type {
   ApiAgent, ApiRegistration, ApiQueueItem, ApiAuditEvent,
-  ApiHealth, ApiInterventionBody, ApiEnvelope,
+  ApiHealth, ApiInterventionBody, ApiEnvelope, ApiQueueItemWire,
+  DeliveryState, MessageStatus,
 } from './api-types'
 
 const BASE         = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
@@ -36,6 +37,86 @@ async function request<T>(
 
 const get  = <T>(path: string, h?: Record<string,string>) => request<T>('GET',  path, h)
 const post = <T>(path: string, body: unknown, h?: Record<string,string>) => request<T>('POST', path, h, body)
+
+const DELIVERY_STATES = new Set<DeliveryState>([
+  'pending', 'leased', 'blocked', 'expired', 'dead_lettered', 'done',
+])
+const MESSAGE_STATUSES = new Set<MessageStatus>(['pending', 'in_progress', 'done', 'error'])
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function asString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function asNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null
+}
+
+function normalizeDeliveryState(value: unknown): DeliveryState {
+  if (typeof value === 'string' && DELIVERY_STATES.has(value as DeliveryState)) return value as DeliveryState
+  if (value === 'queued') return 'pending'
+  return 'pending'
+}
+
+function normalizeMessageStatus(value: unknown): MessageStatus {
+  return typeof value === 'string' && MESSAGE_STATUSES.has(value as MessageStatus)
+    ? value as MessageStatus
+    : 'pending'
+}
+
+export function normalizeQueueItem(raw: unknown): ApiQueueItem | null {
+  const item = asRecord(raw) as ApiQueueItemWire
+  const envelopeRaw = asRecord(item.envelope ?? item.message ?? raw)
+  const id = asString(envelopeRaw.id ?? item.message_id ?? item.queue_id)
+  if (!id) return null
+
+  const envelope: ApiEnvelope = {
+    id,
+    timestamp: asString(envelopeRaw.timestamp),
+    sender: asString(envelopeRaw.sender),
+    recipient: asString(envelopeRaw.recipient ?? item.recipient),
+    task_type: asString(envelopeRaw.task_type, 'MESSAGE'),
+    context: asRecord(envelopeRaw.context),
+    payload: asRecord(envelopeRaw.payload),
+    status: normalizeMessageStatus(envelopeRaw.status),
+    error: asString(envelopeRaw.error),
+  }
+
+  return {
+    queue_id: asString(item.queue_id, id),
+    message_id: asString(item.message_id, id),
+    recipient: asString(item.recipient, envelope.recipient),
+    envelope,
+    computed_priority: asNumber(item.computed_priority, asNumber(item.priority)),
+    attempt_count: asNumber(item.attempt_count, asNumber(item.attempts)),
+    lease_until: asNullableString(item.lease_until),
+    delivery_state: normalizeDeliveryState(item.delivery_state ?? item.state),
+    blocked_reason: asString(item.blocked_reason ?? item.reason),
+    provenance_source: asNullableString(item.provenance_source),
+    provenance_agent: asNullableString(item.provenance_agent),
+    provenance_trust_level: typeof item.provenance_trust_level === 'number' ? item.provenance_trust_level : null,
+    ttl_seconds: typeof item.ttl_seconds === 'number' ? item.ttl_seconds : null,
+    dedupe_key: asNullableString(item.dedupe_key),
+    enqueued_at: asNullableString(item.enqueued_at),
+    ttl_expires_at: asNullableString(item.ttl_expires_at),
+    visible_at: asNullableString(item.visible_at),
+  }
+}
+
+function normalizeQueueItems(raw: unknown): ApiQueueItem[] {
+  return Array.isArray(raw)
+    ? raw.map(normalizeQueueItem).filter((item): item is ApiQueueItem => Boolean(item))
+    : []
+}
 
 // Auth header factories
 function adminH(): Record<string,string> {
@@ -122,16 +203,16 @@ export const api = {
 
     // GET /messages/peek  (agent auth — agents can only peek own queue)
     peek: (recipient: string, apiKey: string, limit = 20) =>
-      get<ApiQueueItem[]>(
+      get<unknown>(
         `/messages/peek?recipient=${recipient}&limit=${limit}`,
         agentH(recipient, apiKey)
-      ),
+      ).then(normalizeQueueItems),
 
     // POST /messages/fetch-next  (agent auth)
     fetchNext: (recipient: string, apiKey: string) =>
-      post<ApiQueueItem | Record<string, never>>(
+      post<unknown>(
         '/messages/fetch-next', { recipient }, agentH(recipient, apiKey)
-      ),
+      ).then(raw => normalizeQueueItem(raw) ?? {}),
 
     // POST /messages/{id}/ack  (agent auth)
     ack: (messageId: string, recipient: string, apiKey: string) =>
@@ -149,7 +230,7 @@ export const api = {
   queue: {
     // GET /queue/{recipient}  (agent auth)
     list: (recipient: string, apiKey: string) =>
-      get<ApiQueueItem[]>(`/queue/${recipient}`, agentH(recipient, apiKey)),
+      get<unknown>(`/queue/${recipient}`, agentH(recipient, apiKey)).then(normalizeQueueItems),
   },
 
   manager: {

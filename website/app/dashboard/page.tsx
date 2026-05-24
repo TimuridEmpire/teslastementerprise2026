@@ -16,8 +16,9 @@ import {
   AGENTS, COMPANY_KPIS, ACTIVITY_FEED, TASK_THROUGHPUT, REVENUE_FORECAST,
   BUDGET_ALLOCATIONS, AGENT_LOAD, PIPELINE, MESSAGE_FLOW, KANOSEI_WORKFLOWS,
 } from '@/lib/mock-data'
-import { useHealth, useAudit } from '@/lib/hooks'
+import { useHealth, useAudit, useQueue } from '@/lib/hooks'
 import type { AgentId } from '@/lib/types'
+import type { ApiQueueItem } from '@/lib/api-types'
 
 // ─── Agent icon map ────────────────────────────────────────────────────────
 const AGENT_ICONS: Record<AgentId, React.ReactNode> = {
@@ -44,13 +45,26 @@ function Sparkline({ data, color = 'var(--primary)', height = 28 }: { data: numb
 }
 
 // ─── Pulse Tab ─────────────────────────────────────────────────────────────
-function PulseTab({ liveAudit }: { liveAudit: any[] | null }) {
+function PulseTab({ liveAudit, liveQueue }: { liveAudit: any[] | null; liveQueue: ApiQueueItem[] | null }) {
+  const kpis = liveQueue !== null
+    ? [
+      ...COMPANY_KPIS.slice(0, 3),
+      {
+        label: 'Manager Queue',
+        value: liveQueue.length,
+        delta: undefined,
+        trend: 'flat' as const,
+        description: 'Live queued router items for MANAGER',
+      },
+    ]
+    : COMPANY_KPIS.slice(0, 4)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
 
       {/* KPI grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-        {COMPANY_KPIS.slice(0, 4).map((kpi, i) => {
+        {kpis.map((kpi, i) => {
           const positive = kpi.trend === 'up'
           const spark = [60, 65, 62, 70, 75, 80, 85, 87].map((v, j) => v + i * 3 + j)
           return (
@@ -507,6 +521,7 @@ export default function DashboardPage() {
   const [tab, setTab] = useState<TabId>('pulse')
   const { data: health } = useHealth()
   const { data: audit  } = useAudit(12)
+  const { data: managerQueue } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
 
   return (
     <div style={{ padding: 'clamp(20px, 3vw, 32px) clamp(20px, 3vw, 32px) 40px', maxWidth: 1400, margin: '0 auto' }}>
@@ -568,7 +583,7 @@ export default function DashboardPage() {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
         >
-          {tab === 'pulse'        && <PulseTab liveAudit={audit} />}
+          {tab === 'pulse'        && <PulseTab liveAudit={audit} liveQueue={managerQueue} />}
           {tab === 'distribution' && <DistributionTab />}
           {tab === 'pipeline'     && <PipelineTab />}
           {tab === 'performance'  && <PerformanceTab />}

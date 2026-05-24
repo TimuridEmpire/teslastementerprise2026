@@ -95,6 +95,35 @@ def test_fetch_next_returns_envelope_from_router_queue_item():
     assert session.calls[0]["json"] == {"recipient": "HR"}
 
 
+def test_fetch_next_item_returns_rich_router_queue_item():
+    session = FakeSession()
+    session.next_payload = {
+        "queue_id": "msg-1",
+        "message_id": "msg-1",
+        "recipient": "HR",
+        "envelope": sample_envelope(),
+        "computed_priority": 150,
+        "attempt_count": 0,
+        "lease_until": "2026-04-30T12:01:00Z",
+        "delivery_state": "leased",
+        "blocked_reason": "",
+        "ttl_seconds": 600,
+        "dedupe_key": "talent-1",
+    }
+    client = EnterpriseRouterClient(
+        base_url="http://router.local",
+        agent_name="HR",
+        api_key="secret",
+        session=session,
+    )
+
+    item = client.fetch_next_item("HR")
+
+    assert item == session.next_payload
+    assert item["computed_priority"] == 150
+    assert item["delivery_state"] == "leased"
+
+
 def test_submit_message_alias_uses_same_router_contract():
     session = FakeSession()
     session.next_payload = {"message_id": "msg-1"}
@@ -127,6 +156,21 @@ def test_peek_returns_envelopes_from_router_queue_items():
     assert session.calls[0]["method"] == "GET"
     assert session.calls[0]["url"] == "http://router.local/messages/peek"
     assert session.calls[0]["params"] == {"recipient": "HR", "limit": 5}
+
+
+def test_peek_items_returns_rich_router_queue_items():
+    session = FakeSession()
+    session.next_payload = [{"envelope": sample_envelope(), "computed_priority": 150}]
+    client = EnterpriseRouterClient(
+        base_url="http://router.local",
+        agent_name="HR",
+        api_key="secret",
+        session=session,
+    )
+
+    rows = client.peek_items(limit=5)
+
+    assert rows == session.next_payload
 
 
 def test_ack_alias_posts_ack_endpoint():

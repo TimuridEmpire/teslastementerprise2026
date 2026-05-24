@@ -2,10 +2,7 @@
 
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import {
-  MessageSquare, Filter, ChevronDown, ChevronRight, Copy,
-  CheckCircle2, Clock, XCircle, RefreshCw, Circle,
-} from 'lucide-react'
+import { Filter, ChevronRight, Copy, CheckCircle2, Circle } from 'lucide-react'
 import { MESSAGES, AGENTS } from '@/lib/mock-data'
 import { useQueue } from '@/lib/hooks'
 import type { AgentId } from '@/lib/types'
@@ -25,11 +22,11 @@ export default function MessagesPage() {
   const [copied, setCopied]           = useState(false)
 
   // Live MANAGER queue (gracefully empty when API key not set)
-  const { data: liveQueue, loading } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  const { data: liveQueue, enabled: queueEnabled, error: queueError } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  const hasRouterData = liveQueue !== null
 
-  // Combine live queue items with mock messages for display
-  const messages = [
-    ...(liveQueue ?? []).map(item => ({
+  const messages = hasRouterData
+    ? liveQueue.map(item => ({
       id:          item.envelope.id,
       sender:      item.envelope.sender.toLowerCase(),
       recipient:   item.envelope.recipient.toLowerCase(),
@@ -41,9 +38,13 @@ export default function MessagesPage() {
       payload:     item.envelope.payload,
       context:     item.envelope.context,
       error:       item.envelope.error,
+      attempts:    item.attempt_count,
+      blocked:     item.blocked_reason,
+      lease_until: item.lease_until,
+      dedupe_key:  item.dedupe_key,
       isLive:      true,
-    })),
-    ...MESSAGES.map(m => ({
+    }))
+    : MESSAGES.map(m => ({
       id:        m.id,
       sender:    m.sender,
       recipient: m.recipient,
@@ -55,9 +56,12 @@ export default function MessagesPage() {
       payload:   m.payload,
       context:   m.context,
       error:     m.error,
+      attempts:  m.attempt_count,
+      blocked:   m.error ?? '',
+      lease_until: null,
+      dedupe_key: null,
       isLive:    false,
-    })),
-  ]
+    }))
 
   const filtered = messages.filter(m => {
     const agentMatch  = filter.agent  === 'all' || m.sender === filter.agent || m.recipient === filter.agent
@@ -90,10 +94,12 @@ export default function MessagesPage() {
         <div>
           <h1 className="text-[16px] font-bold" style={{ color: 'var(--text-1)' }}>Messages</h1>
           <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-3)' }}>
-            {liveQueue ? `${liveQueue.length} live + ` : ''}{MESSAGES.length} mock messages
+            {hasRouterData
+              ? `${liveQueue.length} live queue ${liveQueue.length === 1 ? 'item' : 'items'}`
+              : `${MESSAGES.length} mock messages${queueEnabled && queueError ? ' - router unavailable' : ''}`}
           </p>
         </div>
-        {liveQueue && (
+        {hasRouterData && (
           <span className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--green)' }}>
             <span className="live-dot" style={{ width: 6, height: 6 }} />
             Live queue active
@@ -223,7 +229,7 @@ export default function MessagesPage() {
               <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
                 {[
                   { label: 'Envelope', data: { id: sel.id, sender: sel.sender, recipient: sel.recipient, task_type: sel.task_type, timestamp: sel.timestamp } },
-                  { label: 'State',    data: { status: sel.status, delivery: sel.delivery, priority: sel.priority, error: sel.error || '—' } },
+                  { label: 'State',    data: { status: sel.status, delivery: sel.delivery, priority: sel.priority, attempts: sel.attempts, blocked_reason: sel.blocked || '', lease_until: sel.lease_until, dedupe_key: sel.dedupe_key, error: sel.error || '—' } },
                   { label: 'Payload',  data: sel.payload },
                   { label: 'Context',  data: sel.context },
                 ].map(section => (

@@ -148,8 +148,7 @@ class TokenBudget:
         if str(_root) not in sys.path:
             sys.path.insert(0, str(_root))
 
-        from agent_transport import AGENT_ENGINEERING, AGENT_HR, make_envelope, submit
-        from enterprise_router_client import router_configured
+        from agent_transport import AGENT_ENGINEERING, AGENT_HR, local_fallback_enabled, make_envelope, submit
 
         request = make_envelope(
             sender=AGENT_ENGINEERING,
@@ -160,10 +159,10 @@ class TokenBudget:
                 "requested_budgets": DEFAULT_BUDGETS,
             },
         )
-        if router_configured():
-            submit(request)
-        elif db is not None:
+        if local_fallback_enabled() and db is not None:
             db.messages.insert_one(request)
+        else:
+            submit(request)
         print(f"[TokenBudget] Token request sent to HR agent: {request['id']}")
 
 
@@ -1220,12 +1219,11 @@ def claim_next_message():
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
-    from agent_transport import AGENT_ENGINEERING, receive
-    from enterprise_router_client import router_configured
+    from agent_transport import AGENT_ENGINEERING, local_fallback_enabled, receive
 
-    if router_configured():
-        return receive(AGENT_ENGINEERING)
-    return claim_next_message_legacy(_legacy_mongo_db())
+    if local_fallback_enabled():
+        return claim_next_message_legacy(_legacy_mongo_db())
+    return receive(AGENT_ENGINEERING)
 
 
 def deliver_response(db, response: dict) -> None:
@@ -1236,13 +1234,12 @@ def deliver_response(db, response: dict) -> None:
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
-    from agent_transport import submit
-    from enterprise_router_client import router_configured
+    from agent_transport import local_fallback_enabled, submit
 
-    if router_configured():
-        submit(response)
-    else:
+    if local_fallback_enabled():
         write_response_legacy(db, response)
+    else:
+        submit(response)
 
 
 if __name__ == "__main__":
@@ -1253,14 +1250,13 @@ if __name__ == "__main__":
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
-    from agent_transport import ack
-    from enterprise_router_client import router_configured
+    from agent_transport import ack, local_fallback_enabled
 
-    db = None if router_configured() else _legacy_mongo_db()
+    db = _legacy_mongo_db() if local_fallback_enabled() else None
     agent = EngineeringAgent(db=db)
     poll_interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 
-    mode = "enterprise router" if router_configured() else "legacy MongoDB"
+    mode = "legacy MongoDB offline demo" if local_fallback_enabled() else "enterprise router"
     print(f"Engineering agent started ({mode}). Polling every {poll_interval}s...")
 
     while True:
@@ -1283,11 +1279,11 @@ if __name__ == "__main__":
         deliver_response(db, response)
         response.pop("_id", None)
 
-        if router_configured():
-            ack(str(message["id"]), "Engineering")
-        else:
+        if local_fallback_enabled():
             final_status = "done" if response.get("status") == "done" else "error"
             mark_source_done_legacy(db, message["id"], final_status, response.get("error", ""))
+        else:
+            ack(str(message["id"]), "Engineering")
 
         print(f"Response written for message {message['id']}. Status: {response.get('status')}")
         print(json.dumps(response, indent=2))

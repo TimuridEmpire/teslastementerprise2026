@@ -74,8 +74,8 @@ export function useQueue(recipient: string, apiKey: string) {
   const fetcher = useCallback(
     () => enabled
       ? api.queue.list(recipient, apiKey)
-      : Promise.resolve([] as ApiQueueItem[]),
+      : Promise.resolve(null),
     [recipient, apiKey, enabled]
   )
-  return usePolling<ApiQueueItem[]>(fetcher, 4_000)
+  return { ...usePolling<ApiQueueItem[] | null>(fetcher, 4_000), enabled }
 }

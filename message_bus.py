@@ -190,6 +190,7 @@ def send_message(message: Message | dict[str, Any]) -> str | None:
     Route a message: enterprise HTTP router when configured, else in-process bus.
     Returns message id from the router, or the handler result from the local bus.
     """
+    from agent_transport import local_fallback_enabled
     from enterprise_router_client import EnterpriseRouterClient, router_configured
 
     envelope = normalize_envelope(message)
@@ -199,6 +200,11 @@ def send_message(message: Message | dict[str, Any]) -> str | None:
         assert client is not None
         return client.submit_message(envelope)
 
+    if not local_fallback_enabled():
+        raise RuntimeError(
+            "Local MessageBus send_message is available only for explicit offline demos/tests. "
+            "Set ENTERPRISE_ROUTER_OFFLINE_DEMO=1 or use agent_transport.submit()."
+        )
     _get_default_bus().send(envelope)
     return envelope.get("id")
 
@@ -207,6 +213,7 @@ def get_messages_for(agent_name: str) -> list[dict[str, Any]]:
     """
     Drain messages for an agent: peek+fetch via router, or snapshot local mailbox.
     """
+    from agent_transport import local_fallback_enabled
     from enterprise_router_client import EnterpriseRouterClient, router_configured
 
     if router_configured():
@@ -226,4 +233,9 @@ def get_messages_for(agent_name: str) -> list[dict[str, Any]]:
                     pass
         return drained
 
+    if not local_fallback_enabled():
+        raise RuntimeError(
+            "Local MessageBus mailboxes are available only for explicit offline demos/tests. "
+            "Set ENTERPRISE_ROUTER_OFFLINE_DEMO=1 or use agent_transport.receive()."
+        )
     return _get_default_bus().peek_mailbox(agent_name)

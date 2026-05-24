@@ -270,6 +270,7 @@ class EnterpriseRouter:
     def _record_to_queued(self, record: dict[str, Any]) -> QueuedMessage:
         msg = record.get("message") or {}
         env = Message.from_dict(msg)
+        routing = record.get("routing") or {}
         return QueuedMessage(
             queue_id=record.get("message_id", ""),
             message_id=record.get("message_id", ""),
@@ -277,7 +278,14 @@ class EnterpriseRouter:
             envelope=env,
             priority=int(record.get("priority", 0)),
             state=record.get("state", "queued"),
-            lease_owner=record.get("lease_until"),
+            attempts=int(record.get("attempts", 0)),
+            lease_until=record.get("lease_until"),
+            blocked_reason=record.get("error") or "",
+            ttl_seconds=routing.get("ttl_seconds"),
+            dedupe_key=record.get("dedupe_key"),
+            enqueued_at=record.get("enqueued_at"),
+            ttl_expires_at=record.get("ttl_expires_at"),
+            visible_at=record.get("visible_at") or record.get("enqueued_at"),
         )
 
     def _maintain_queue(self, recipient: str) -> None:

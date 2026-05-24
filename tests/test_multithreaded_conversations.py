@@ -16,7 +16,9 @@ from message_bus import MessageBus
 
 class TestMultithreadedConversations(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmpdir = tempfile.TemporaryDirectory()
+        os.environ["ENTERPRISE_ROUTER_OFFLINE_DEMO"] = "1"
+        self.addCleanup(os.environ.pop, "ENTERPRISE_ROUTER_OFFLINE_DEMO", None)
+        self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._tmpdir.cleanup)
         db = os.path.join(self._tmpdir.name, "backlog.db")
         jlog = os.path.join(self._tmpdir.name, "bus.jsonl")

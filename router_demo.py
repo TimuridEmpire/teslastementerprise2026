@@ -120,8 +120,8 @@ def send_ceo_to_hr(base_url: str, ceo_key: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed and exercise enterprise_router demo agents.")
-    parser.add_argument("--base-url", default=os.getenv("ENTERPRISE_ROUTER_API_URL", DEFAULT_BASE_URL))
-    parser.add_argument("--admin-secret", default=os.getenv("ROUTER_ADMIN_SECRET", DEFAULT_ADMIN_SECRET))
+    parser.add_argument("--base-url", default=os.getenv("ENTERPRISE_ROUTER_URL", os.getenv("ENTERPRISE_ROUTER_API_URL", DEFAULT_BASE_URL)))
+    parser.add_argument("--admin-secret", default=os.getenv("ENTERPRISE_ROUTER_ADMIN_SECRET", DEFAULT_ADMIN_SECRET))
     parser.add_argument("--send-ceo-to-hr", action="store_true")
     args = parser.parse_args()
 
