@@ -3,6 +3,7 @@
 ## Source of Truth
 - Based on `agents.md` and `eng-agents/engineering_agent.py`.
 - Router path is primary; legacy Mongo path only for offline demo.
+- Implementation details for pulling, posting, ack/nack, and artifact output are in `agent_logic_structures/Enterprise_Router_Implementation_Guide.md`.
 
 ## State Machine
 1. `IDLE`

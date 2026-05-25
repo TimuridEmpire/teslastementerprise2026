@@ -3,6 +3,7 @@
 ## Source of Truth
 - Based on `agents.md` and `ceo-agents/ceo_agent.py`.
 - Runtime transport is `enterprise_router` via `EnterpriseRouterClient`.
+- Implementation details for pulling, posting, ack/nack, and artifact output are in `agent_logic_structures/Enterprise_Router_Implementation_Guide.md`.
 
 ## State Machine
 1. `IDLE`

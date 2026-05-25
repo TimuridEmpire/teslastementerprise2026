@@ -3,6 +3,7 @@
 ## Source of Truth
 - Based on `agents.md` and `marketing-agents/marketing_agent.py`.
 - Uses `agent_transport` receive/submit/ack/nack on enterprise router.
+- Implementation details for pulling, posting, ack/nack, and artifact output are in `agent_logic_structures/Enterprise_Router_Implementation_Guide.md`.
 
 ## State Machine
 1. `IDLE`
