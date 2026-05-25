@@ -1,7 +1,7 @@
 import json
 import os
 from llm_provider import llm_json_object
-from storage import storage
+from pm_storage import storage
 
 def plan_campaign(product, features):
     feature_names = [f["name"] if isinstance(f, dict) else f for f in features]

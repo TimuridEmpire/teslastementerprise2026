@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import requests
 from agent_logger import get_agent_logger
+from enterprise_router_client import EnterpriseRouterClient
+from message_schema import Message
 
 from thread_safe_agent import ThreadSafeAgentMixin
 
@@ -245,6 +247,60 @@ class CeoAgent(ThreadSafeAgentMixin):
                 self.metrics["last_cycle_duration_ms"] = elapsed_ms
                 if "result" in locals():
                     result["metrics"] = self._metrics_snapshot_unlocked()
+
+    def process_one_router_message(
+        self,
+        *,
+        router_client: Optional[EnterpriseRouterClient] = None,
+        recipient: Optional[str] = None,
+    ) -> bool:
+        """
+        Pull one envelope from the shared enterprise_router queue and process it.
+        Returns False when the CEO queue is empty.
+        """
+        target = recipient or self.name
+        client = router_client or EnterpriseRouterClient.from_env(agent_name=target)
+        envelope = client.fetch_next(target)
+        if envelope is None:
+            return False
+
+        message_id = str(envelope.get("id", ""))
+        try:
+            self.on_bus_envelope(envelope)
+        except Exception as exc:
+            client.nack_message(message_id, target, reason=str(exc))
+            return True
+
+        client.ack_message(message_id, target)
+        return True
+
+    def send_router_envelope(
+        self,
+        *,
+        recipient: str,
+        task_type: str,
+        payload: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+        router_client: Optional[EnterpriseRouterClient] = None,
+        urgency: str = "normal",
+    ) -> str:
+        """Send one CEO-originated envelope through the shared enterprise_router API."""
+        client = router_client or EnterpriseRouterClient.from_env(agent_name=self.name)
+        message = Message.create(
+            sender=self.name,
+            recipient=recipient,
+            task_type=task_type,
+            context=context or {},
+            payload=payload,
+        ).to_dict()
+        return client.submit_envelope(
+            message,
+            routing_hints={
+                "urgency": urgency,
+                "provenance_source": "ceo_agent",
+                "provenance_agent": self.name,
+            },
+        )
 
     def _talk_to_engine_unlocked(self, prompt: str) -> Any:
         """Same as ``talk_to_engine`` without taking ``_agent_lock`` (for internal use under lock)."""
@@ -493,6 +549,32 @@ class CeoAgent(ThreadSafeAgentMixin):
                 "agent": self.name,
                 "task_type": task,
                 "metrics": self.get_metrics(),
+            }
+
+        if task == "MINT_TOKENS":
+            if not self.distribution_registry:
+                raise RuntimeError("CeoAgent has no distribution_registry attached.")
+            scenario_id = str(payload.get("scenario_id") or "").strip()
+            holder = str(payload.get("holder") or "HR").strip()
+            quantity = int(payload.get("quantity") or 0)
+            cost_per_send = int(payload.get("cost_per_send") or 1)
+            if not scenario_id:
+                raise ValueError("MINT_TOKENS payload requires scenario_id.")
+            if quantity < 0:
+                raise ValueError("MINT_TOKENS quantity must be non-negative.")
+            if not self.distribution_registry.is_registered(scenario_id):
+                self.register_distribution_scenario(
+                    scenario_id,
+                    cost_per_send=cost_per_send,
+                )
+            self.mint_distribution_tokens(scenario_id, quantity, holder)
+            return {
+                "ok": True,
+                "agent": self.name,
+                "task_type": task,
+                "scenario_id": scenario_id,
+                "holder": holder,
+                "quantity": quantity,
             }
 
         return {

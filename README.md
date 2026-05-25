@@ -18,10 +18,225 @@ CEO Agent is the central decision-maker. It delegates tasks, resolves conflicts,
 - **Inputs**: Role reqs from CEO. Outputs: Hiring plans, team rosters, training modules.
 - **Behaviors**: Screens resumes; simulates interviews. Tools: LinkedIn scraper, calendar scheduler.
 
+## Shared Router Integration
+
+This repo now includes `enterprise_router_client.py`, a small adapter for the local `enterprise_router` FastAPI service. Runtime agent-to-agent communication must use this router instead of writing directly to MongoDB, sharing a SQLite file, or using the local `MessageBus`.
+
+Recommended flow:
+
+1. Start the Enterprise Router API.
+2. Configure the router with SQLite for local development or MongoDB as the router storage backend.
+3. Register each agent in the router and issue that agent an API key.
+4. Set that key in this repo's environment.
+5. Agents call the router API to send, fetch, ack, and nack messages.
+
+Required environment variables for an agent process:
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `ENTERPRISE_ROUTER_URL` | Base URL for the router API | empty |
+| `ENTERPRISE_AGENT_NAME` | Default authenticated agent name for one process | empty |
+| `ENTERPRISE_AGENT_API_KEY` | API key for one authenticated agent process | empty |
+| `CEO_AGENT_API_KEY` | CEO worker API key used by `run_agents.py` | empty |
+| `PM_AGENT_API_KEY` | PM worker API key used by `run_agents.py` | empty |
+| `MARKETING_AGENT_API_KEY` | Marketing worker API key used by `run_agents.py` | empty |
+| `HR_AGENT_API_KEY` | HR worker API key used by `run_agents.py` | empty |
+| `ENGINEERING_AGENT_API_KEY` | Engineering worker API key used by `run_agents.py` | empty |
+| `ADVISOR_AGENT_API_KEY` | Strategic Advisor worker API key used by `run_agents.py` | empty |
+| `ENTERPRISE_ROUTER_TIMEOUT_S` | HTTP timeout in seconds | `10` |
+
+`ENTERPRISE_ROUTER_API_URL`, `ENTERPRISE_ROUTER_AGENT_NAME`, and `ENTERPRISE_ROUTER_AGENT_API_KEY` are accepted as compatibility aliases, but new runtime setup should use the baseline names above. `ENTERPRISE_ROUTER_OFFLINE_DEMO=1` is the only supported way to intentionally use local `MessageBus`/legacy Mongo demo paths.
+
+The HR worker in `hr-agents/hr_agent.py` now polls `POST /messages/fetch-next` through `EnterpriseRouterClient`, processes the envelope, then calls `ack` or `nack` on the shared router. The CEO and Advisor agents have the same router path through `process_one_router_message()`, and PM/Marketing/Engineering use `agent_transport` for send/fetch/ack. `AgentBacklog` remains useful as a local execution log, but the shared queue of record is the router API. The website visualizes the same queues and audit events through FastAPI without reading this repo's local files.
+
+For future agents, reuse the same pattern:
+
+```python
+from enterprise_router_client import EnterpriseRouterClient
+
+client = EnterpriseRouterClient.from_env(agent_name="Sales")
+envelope = client.fetch_next("Sales")
+if envelope:
+    # process work here
+    client.ack_message(envelope["id"], "Sales")
+```
+
+### Local Website Demo
+
+Use this flow to run the router, all implemented agent workers, and the website locally. Replace `<project-root>` with the path to this repository. If the router is in a separate checkout, replace `<router-repo>` with that checkout path. Do not commit `.env.local` or real API keys.
+
+The implemented runtime workers are `CEO`, `PM`, `Marketing`, `HR`, `Engineering`, and `Strategic Advisor`. `Sales` and `Finance` are registered with the router/website, but this codebase does not currently include worker implementations for them, so `run_agents.py` reports them as missing and skips them.
+
+1. Start the Enterprise Router API in one terminal:
+
+```powershell
+cd "<router-repo>"
+$env:ENTERPRISE_ROUTER_BACKEND="sqlite"
+$env:ENTERPRISE_ROUTER_DB="enterprise_router_demo.db"
+$env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
+$env:ENTERPRISE_ROUTER_PORT="8000"
+python -m enterprise_router.api
+```
+
+2. Confirm the router is reachable from a second terminal:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing http://localhost:8000/health
+```
+
+A healthy local router returns JSON similar to:
+
+```json
+{"status":"ok","backend":"sqlite"}
+```
+
+3. Register the default agents and write local key files:
+
+```powershell
+cd "<project-root>"
+$env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
+$env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
+python .\scripts\setup_local_runtime.py --write-website-env
+```
+
+This writes local-only secret files:
+
+- `.router_keys.ps1`: PowerShell environment variables for agent workers.
+- `.router_keys.cmd`: Command Prompt environment variables for agent workers.
+- `website/.env.local`: Next.js environment variables for the website.
+- `website/.env.local.generated`: generated website env backup.
+
+These files are ignored by Git and should not be committed.
+
+4. Load the generated worker keys:
+
+```powershell
+cd "<project-root>"
+. .\.router_keys.ps1
+```
+
+Command Prompt alternative:
+
+```cmd
+cd "<project-root>"
+call .router_keys.cmd
+```
+
+5. Start the implemented agent workers:
+
+```powershell
+python .\run_agents.py --agents all
+```
+
+Current local worker behavior:
+
+- `CEO`, `PM`, `Marketing`, `HR`, and `Strategic Advisor` should start.
+- `Engineering` is skipped unless `crewai` and `crewai_tools` are installed.
+- `Sales` and `Finance` are skipped because this codebase does not yet include worker implementations for them.
+- PM and Marketing use local file storage by default (`data/pm_storage.json`) so local MongoDB is not required. Set `PM_STORAGE_BACKEND=mongo` only if you intentionally want PM/Marketing domain storage in Mongo.
+
+6. Start the initiation workflow:
+
+```powershell
+python .\scripts\initiate_router_workflow.py --no-include-engineering
+```
+
+This queues the first messages that make the agents communicate. Without this seed, the workers mostly poll empty queues.
+
+7. Start the website in another terminal:
+
+```powershell
+cd "<project-root>\website"
+npm install
+npm run dev
+```
+
+Open the Next.js URL from the terminal, usually `http://localhost:3000`.
+
+What you should see:
+
+- `/dashboard` and `/observability` read router health, audit, and queue data.
+- `/observability` shows live audit events and router throughput after the initiation script submits messages.
+- `/messages` shows the live MANAGER queue. It does not show all historical messages.
+- Agent pages show that agent's current inbound queue while messages are still queued.
+- Running workers fetch queued messages, process them, then ack or nack them.
+- Router audit history shows the lifecycle of submitted, fetched, acked, and nacked messages.
+
+### Seeing Agent Responses
+
+Agent responses are not chat bubbles yet. They are router messages and audit events.
+
+Where to look:
+
+```powershell
+# Router audit log
+Invoke-WebRequest -UseBasicParsing "http://localhost:8000/audit?limit=50" -Headers @{ "X-Admin-Secret" = "dev-admin-secret" }
+```
+
+In the website:
+
+- `/observability`: best place to see that messages were submitted, fetched, acked, or nacked.
+- `/messages`: shows the MANAGER queue only.
+- `/agents/<agent>`: shows that agent's live inbound queue if the message has not already been fetched.
+
+Important: once a worker fetches and ack/nacks a message, it leaves the queue. The website currently shows live queues and audit events, not a full conversation transcript. Domain outputs from PM/Marketing are written to local files such as `data/pm_storage.json`, `data/projects.json`, and `data/campaigns.json`.
+
+### What Is Live vs. Mock
+
+Live today:
+
+- Router health (`/health`).
+- Router audit log (`/audit`).
+- Queue views (`/queue/{recipient}`).
+- Router throughput charts derived from audit events.
+- Manager interventions that submit real router messages.
+
+Still mock/demo today:
+
+- Revenue forecast.
+- Budget allocation.
+- Sales pipeline.
+- Capacity/load percentages.
+- Workflow progress cards.
+- Most KPI cards.
+
+Those business visualizations need agents to emit structured business metric events, or the router needs a new `/metrics` endpoint. Right now the router knows message lifecycle data; it does not automatically know revenue, budget, ROI, or staffing capacity.
+
+### How Autonomy Works Right Now
+
+Autonomy is currently message-driven and rule/handler-driven:
+
+- The initiation script submits starter messages as `CEO`.
+- The router stores messages, validates auth/allowlists, computes priority, leases work, and records audit events.
+- Workers poll their own queue.
+- Each worker decides what to do based on `task_type`.
+- Some workers submit follow-up messages. Example: PM receives `DEFINE_Q2_ROADMAP`, creates backlog/project data, then sends `LAUNCH_CAMPAIGN` and `PM_REPORT` to Marketing.
+- Marketing may send `BUDGET_APPROVAL` to CEO or `CAMPAIGN_LAUNCHED` to Sales.
+
+The router does not decide business strategy. It routes and records messages. The agents decide their next actions inside their task handlers.
+
+### Onboarding Page
+
+The website currently redirects `/` to `/dashboard`. That skips onboarding, but onboarding is not what starts the backend system. The backend system starts when:
+
+1. The router is running.
+2. Local keys are generated.
+3. Agent workers are running.
+4. `scripts/initiate_router_workflow.py` submits starter messages.
+
+Skipping onboarding is not why messages fail. It only means the UI opens at the dashboard instead of a guided setup screen.
+
+Common local issues:
+
+- `403 Invalid API key`: the website or agent process is using a stale key. Re-run `scripts/setup_local_runtime.py --write-website-env`, reload `.router_keys.ps1` or `.router_keys.cmd`, and restart the affected process.
+- `403 Task type 'MANAGER_INTERVENTION' is not allowed`: the agent was registered with an old allowlist. Re-run `scripts/setup_local_runtime.py --write-website-env` against the running router.
+- `WinError 10048` on port `8000`: another router is already running on that port. Stop it or use a different `ENTERPRISE_ROUTER_PORT` and update `NEXT_PUBLIC_API_URL` / `ENTERPRISE_ROUTER_URL` to match.
+- Website still shows old keys after editing `.env.local`: restart `npm run dev`; Next.js reads environment variables at server startup.
+- PM/Marketing try to connect to `localhost:27017`: make sure `PM_STORAGE_BACKEND` is not set to `mongo`, or run MongoDB intentionally.
 
 ## Distribution tokens (CEO-managed)
 
-Governed **scenarios** throttle how many times an agent can complete a **token-gated** message on the bus. Each scenario has a **`cost_per_send`**: one successful `MessageBus.send` that names that scenario in the envelope consumes that many tokens from the **sender’s** balance.
+Governed **scenarios** throttle how many times an agent can complete a **token-gated** message on the bus. Each scenario has a **`cost_per_send`**: one successful `MessageBus.send` that names that scenario in the envelope consumes that many tokens from the **sender's** balance.
 
 ### How a send picks a scenario
 
@@ -39,17 +254,17 @@ If enforcement is on and the scenario **is** registered, the sender must have en
 | Concept | Meaning in code |
 |--------|------------------|
 | **Task / scenario** | A registered scenario id (string), e.g. `STANDARD_DELEGATION`. |
-| **Token cost per send** | `cost_per_send` for that scenario (minimum **1**). Each gated send deducts this from the sender’s balance for that scenario. |
+| **Token cost per send** | `cost_per_send` for that scenario (minimum **1**). Each gated send deducts this from the sender's balance for that scenario. |
 | **Per-agent cap** | Not a separate limit: it is whatever balance the CEO **minted** or **transferred** to that agent for that scenario. More sends are allowed only if the CEO increases that balance. |
-| **Total cap (system-wide for one scenario)** | The **sum of all tokens in existence** for that scenario: CEO **mints** into one or more holders; tokens are only destroyed by **consumption** on send. There is no second hidden pool—the minted amount is the supply ceiling until the CEO mints again. |
+| **Total cap (system-wide for one scenario)** | The **sum of all tokens in existence** for that scenario: CEO **mints** into one or more holders; tokens are only destroyed by **consumption** on send. There is no second hidden pool - the minted amount is the supply ceiling until the CEO mints again. |
 
-**Simplest “baseline” task:** one governed bus message (one delivery attempt) for scenario `STANDARD_DELEGATION` with default `cost_per_send = 1` costs **1 token** from the sender’s balance for `STANDARD_DELEGATION`.
+**Simplest "baseline" task:** one governed bus message (one delivery attempt) for scenario `STANDARD_DELEGATION` with default `cost_per_send = 1` costs **1 token** from the sender's balance for `STANDARD_DELEGATION`.
 
 ### Reference allotment (example policy)
 
 The table below is a **project default you can implement** with `CeoDistributionTokenRegistry` + `CeoAgent.mint_distribution_tokens` / `assign_distribution_tokens`. Numbers are not hardcoded; they document the intended budget.
 
-**Scenario: `STANDARD_DELEGATION`** — routine delegations and cross-agent routing that should stay cheap.
+**Scenario: `STANDARD_DELEGATION`** - routine delegations and cross-agent routing that should stay cheap.
 
 | Agent (holder) | Allotted tokens (starting balance) | Notes |
 |----------------|-------------------------------------|--------|
@@ -64,9 +279,9 @@ The table below is a **project default you can implement** with `CeoDistribution
 
 - **`cost_per_send` for `STANDARD_DELEGATION`:** **1** token per gated send.
 - **Total minted supply (cap) for this scenario:** **130** (= sum of the column above). That is the maximum number of token **units** that can ever be spent **if the CEO never mints again**; each send spends `cost_per_send` (so up to **130** successful gated sends at cost 1, distributed by who still has balance).
-- **Per-agent cap:** each row’s allotment is that agent’s **maximum spend** for this scenario until the CEO mints more to them or transfers tokens.
+- **Per-agent cap:** each row's allotment is that agent's **maximum spend** for this scenario until the CEO mints more to them or transfers tokens.
 
-**Scenario: `EXECUTIVE_BROADCAST`** (optional, higher impact) — fewer, more expensive sends.
+**Scenario: `EXECUTIVE_BROADCAST`** (optional, higher impact) - fewer, more expensive sends.
 
 | Agent | Allotted tokens |
 |-------|-----------------|
@@ -74,11 +289,11 @@ The table below is a **project default you can implement** with `CeoDistribution
 | PM | 3 |
 
 - **`cost_per_send`:** **3** (each gated send burns 3 tokens).
-- **Total minted supply for this scenario:** **15** token-units → at most **5** gated sends if only CEO sends (`15 / 3`), or a mix of sends as long as balances allow.
+- **Total minted supply for this scenario:** **15** token-units -> at most **5** gated sends if only CEO sends (`15 / 3`), or a mix of sends as long as balances allow.
 
 ### Wiring (summary)
 
-- Create `CeoDistributionTokenRegistry(executive_name="CEO")`, attach to `CeoAgent` and `MessageBus(..., distribution_tokens=reg, enforce_distribution_tokens=True)`.
+- Create `CeoDistributionTokenRegistry(executive_name="CEO")` and attach it to `CeoAgent`. Token-gated local `MessageBus` examples are offline/demo-only; runtime agent delivery still goes through the Enterprise Router.
 - CEO: `register_distribution_scenario`, `mint_distribution_tokens` (total supply), `assign_distribution_tokens` (per-agent rows in the table).
 - Agents: include `distribution_scenario` or `prompt_scenario` in `context` only when that send should count against the budget.
 
@@ -167,9 +382,9 @@ The `standard_scenario_test.py` script acts as our primary integration test for 
 
 ### Primary Goals of the Test
 1. **Verify the Token Economy:** Ensure the `CeoDistributionTokenRegistry` correctly mints, allocates, and deducts tokens. The test verifies that the CEO can use standard tokens for individual delegations and successfully execute a higher-cost `EXECUTIVE_BROADCAST` token for the final decision.
-2. **Test Asynchronous Routing:** Confirm that the `MessageBus` correctly routes direct messages from the CEO to specific departments, as well as peer-to-peer messages (e.g., HR and Marketing sending cost data directly to Finance without CEO intervention).
+2. **Test Asynchronous Routing:** Confirm that the Enterprise Router correctly routes direct messages from the CEO to specific departments, as well as peer-to-peer messages (e.g., HR and Marketing sending cost data directly to Finance without CEO intervention).
 3. **Validate Schema Compliance:** Ensure every agent communicates using the strict JSON envelope schema without triggering formatting errors.
-4. **Confirm Dual-Persistence:** Verify that every transaction is simultaneously recorded to the cloud (MongoDB Atlas) and local storage (SQLite / JSONL).
+4. **Confirm Router Persistence:** Verify that every transaction is recorded by the Enterprise Router storage backend. SQLite is the local default; MongoDB is supported only behind the router as an optional queue/audit backend.
 
 ### The Execution Process
 When the simulation is triggered, the following workflow occurs automatically:
@@ -212,3 +427,4 @@ What to do to start working and pick up exactly where you left off:
 What to do to end your work session
 
 - Deactivate you env: `deactivate`
+
