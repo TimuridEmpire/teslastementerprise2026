@@ -1,9 +1,10 @@
-import os
+gemiimport os
 from typing import Optional, Dict, Any
 from agent_transport import AGENT_MARKETING, ack, drain_mailbox, local_fallback_enabled, nack, receive, submit
 from message_schema import Message
-from pm_tools import generate_features_llm, moscow_prioritize, create_project, add_request_to_project
+from pm_tools import generate_features_llm, moscow_prioritize, create_project, add_request_to_project, decide_routes
 from pm_storage import storage
+from artifact_writer import render_roadmap_md, write_artifact
 
 # --- INTEGRATION: Import the enterprise logger utilities ---
 from agent_logger import get_agent_logger, log_inter_agent_message
@@ -99,33 +100,35 @@ class PMAgent:
             "features": features
         })
 
-        feature_list = prioritized["must"] + prioritized["should"]
-        
-        # --- INTEGRATION: Log outbound messages ---
-        campaign_msg = Message.create(
-            sender=self.name,
-            recipient=AGENT_MARKETING,
-            task_type="LAUNCH_CAMPAIGN",
-            context={"project_id": project["id"]},
-            payload={"product_name": product, "features": feature_list}
+        # --- Item 2: roadmap artifact (markdown) ---
+        roadmap_md = render_roadmap_md(product, goal, prioritized)
+        roadmap_artifact = write_artifact(
+            agent=self.name,
+            name="roadmap",
+            content=roadmap_md,
+            project_id=project["id"],
         )
-        log_inter_agent_message(self.logger, campaign_msg, direction="SENDING")
-        submit(campaign_msg)
+        self.logger.info(f"PMAgent wrote roadmap artifact: {roadmap_artifact['path']}")
 
-        report_msg = Message.create(
-            sender=self.name,
-            recipient=AGENT_MARKETING,
-            task_type="PM_REPORT",
-            context={"project_id": project["id"]},
-            payload={
-                "project_name": product,
-                "must_count": len(prioritized["must"]),
-                "should_count": len(prioritized["should"]),
-                "status": "roadmap_defined"
-            }
+        # --- Item 3: decide recipients, then send each routed message ---
+        routes = decide_routes(
+            product=product,
+            goal=goal,
+            prioritized=prioritized,
+            project_id=project["id"],
+            artifact_path=roadmap_artifact["path"],
         )
-        log_inter_agent_message(self.logger, report_msg, direction="SENDING")
-        submit(report_msg)
+        for route in routes:
+            out_msg = Message.create(
+                sender=self.name,
+                recipient=route["recipient"],
+                task_type=route["task_type"],
+                context=route["context"],
+                payload=route["payload"],
+            )
+            log_inter_agent_message(self.logger, out_msg, direction="SENDING")
+            submit(out_msg)
+        self.logger.info(f"PMAgent sent {len(routes)} routed messages")
 
     def handle_feature_request(self, msg):
         self.logger.info(f"PMAgent received feature request: {msg['id']}")
