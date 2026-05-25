@@ -4,6 +4,7 @@ from agent_transport import AGENT_MARKETING, ack, drain_mailbox, local_fallback_
 from message_schema import Message
 from pm_tools import generate_features_llm, moscow_prioritize, create_project, add_request_to_project
 from pm_storage import storage
+from artifact_writer import render_roadmap_md, write_artifact
 
 # --- INTEGRATION: Import the enterprise logger utilities ---
 from agent_logger import get_agent_logger, log_inter_agent_message
@@ -81,6 +82,15 @@ class PMAgent:
         self.logger.info(f"PMAgent backlog prioritized")
 
         storage.save_backlog(project["id"], prioritized)
+        # --- Item 2: write a human-readable roadmap artifact (markdown) ---
+        roadmap_md = render_roadmap_md(product, goal, prioritized)
+        roadmap_artifact = write_artifact(
+            agent=self.name,
+            name="roadmap",
+            content=roadmap_md,
+            project_id=project["id"],
+        )
+        self.logger.info(f"PMAgent wrote roadmap artifact: {roadmap_artifact['path']}")
         storage.add_project_event(
             source=self.name,
             event_type="roadmap_defined",
