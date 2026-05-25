@@ -1,5 +1,5 @@
 """
-seed_message_test.py
+seed_message.py
 Run this once to insert a test PM message into the local MongoDB.
 The engineering agent will pick it up on its next poll.
 """
@@ -21,15 +21,13 @@ message = {
     },
     "payload": {
         "feature_id": "FT-001",
-        "feature_name": "Number guessing game",
+        "feature_name": "Calculator app",
         "spec_link": "",
         "acceptance_criteria": [
-            "Make an app using Streamlit and Python that simulates a number guessing game",
-            "The game generates a random number between 1 and 100",
-            "The player has a limited number of attempts to guess the number- after that limit is reached, the player loses",
-            "After each guess provide feedback: too high, too low, or correct",
-            "The game should have a simple and intuitive user interface",
-            "Users should be able to run a main.py file created by the agent to launch the Streamlit app and play the game"
+            "Make an app using Streamlit and Python that simulates a calculator",
+            "The calculator should support basic arithmetic operations: addition, subtraction, multiplication, and division",
+            "The calculator should have a simple and intuitive user interface",
+            "Users should be able to run a main.py file created by the agent to launch the Streamlit app and use the calculator"
         ]
     },
     "status": "pending",
