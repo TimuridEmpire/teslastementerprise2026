@@ -56,16 +56,16 @@ def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 def make_response(sender, recipient, task_type, payload, status="done", error=None):
-    return { 
-        "id": str(uuid.uuid4()),
+    return {
+        "id": f"msg-{uuid.uuid4().hex[:8]}",
         "timestamp": now(),
         "sender": sender,
         "recipient": recipient,
         "task_type": task_type,
-        "context": "",
-        "payload": payload,
+        "context": {},
+        "payload": payload if isinstance(payload, dict) else {"result": payload},
         "status": status,
-        "error": error
+        "error": error or "",
     }
 
 # ---------------------------------------------------------------------------
@@ -141,22 +141,28 @@ class TokenBudget:
         )
 
     def _request_tokens_from_hr(self, db):
-        request = {
-            "id": str(uuid.uuid4()),
-            "timestamp": now(),
-            "sender": "ENG",
-            "recipient": "HR",
-            "task_type": "TOKEN_REQUEST",
-            "context": "",
-            "payload": {
+        import sys
+        from pathlib import Path
+
+        _root = Path(__file__).resolve().parents[1]
+        if str(_root) not in sys.path:
+            sys.path.insert(0, str(_root))
+
+        from agent_transport import AGENT_ENGINEERING, AGENT_HR, local_fallback_enabled, make_envelope, submit
+
+        request = make_envelope(
+            sender=AGENT_ENGINEERING,
+            recipient=AGENT_HR,
+            task_type="TOKEN_REQUEST",
+            payload={
                 "reason": "All engineering agents have exhausted their token budgets mid-task.",
                 "requested_budgets": DEFAULT_BUDGETS,
             },
-            "status": "pending",
-            "error": ""
-        }
-        db.messages.insert_one(request)
-        request.pop("_id", None)
+        )
+        if local_fallback_enabled() and db is not None:
+            db.messages.insert_one(request)
+        else:
+            submit(request)
         print(f"[TokenBudget] Token request sent to HR agent: {request['id']}")
 
 
@@ -1125,7 +1131,7 @@ if __name__ == '__main__':
 
 class EngineeringAgent:
     def __init__(self, db):
-        self.name = "engineering_agent"
+        self.name = "Engineering"
         self.db = db
 
     def handle_message(self, message):
@@ -1178,73 +1184,106 @@ class EngineeringAgent:
             )
 
 
-# MongoDB connection — reads MONGO_URI from environment so credentials are never hardcoded.
-# TODO: change the setup to use enterprise_paths.py for these values so they can be configured via .env and are consistent with the rest of the codebase
-# Set the environment variable before running, e.g.:
-#   $env:MONGO_URI = "mongodb+srv://user:pass@cluster.mongodb.net/"
-#   $env:MONGO_DB  = "kanosei"          # optional, defaults to "kanosei"
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB  = os.environ.get("MONGO_DB", "kanosei")
+def _legacy_mongo_db():
+    from enterprise_paths import inter_agent_mongo_db_name, inter_agent_mongo_uri
 
-def get_db():
-    client = MongoClient(MONGO_URI)
-    return client[MONGO_DB]
+    client = MongoClient(inter_agent_mongo_uri())
+    return client[os.environ.get("MONGO_DB", inter_agent_mongo_db_name())]
 
-def claim_next_message(db):
-    """Atomically find a pending message for ENG and mark it as in-progress."""
+
+def claim_next_message_legacy(db):
+    """Legacy Mongo inbox for Engineering when the router is not configured."""
     return db.messages.find_one_and_update(
-        {"recipient": "ENG", "status": "pending"},
+        {"recipient": {"$in": ["ENG", "Engineering"]}, "status": "pending"},
         {"$set": {"status": "in-progress"}},
-        return_document=True  # return the updated document
+        return_document=True,
     )
 
-def write_response(db, response):
-    """Insert the agent's response as a new message document."""
+
+def write_response_legacy(db, response):
     db.messages.insert_one(response)
 
-def mark_source_done(db, message_id, status, error=""):
-    """Update the original message's status once we're finished with it."""
+
+def mark_source_done_legacy(db, message_id, status, error=""):
     db.messages.update_one(
         {"id": message_id},
-        {"$set": {"status": status, "error": error}}
+        {"$set": {"status": status, "error": error}},
     )
 
+
+def claim_next_message():
+    import sys
+    from pathlib import Path
+
+    _root = Path(__file__).resolve().parents[1]
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
+
+    from agent_transport import AGENT_ENGINEERING, local_fallback_enabled, receive
+
+    if local_fallback_enabled():
+        return claim_next_message_legacy(_legacy_mongo_db())
+    return receive(AGENT_ENGINEERING)
+
+
+def deliver_response(db, response: dict) -> None:
+    import sys
+    from pathlib import Path
+
+    _root = Path(__file__).resolve().parents[1]
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
+
+    from agent_transport import local_fallback_enabled, submit
+
+    if local_fallback_enabled():
+        write_response_legacy(db, response)
+    else:
+        submit(response)
+
+
 if __name__ == "__main__":
-    db = get_db()
+    import sys
+    from pathlib import Path
+
+    _root = Path(__file__).resolve().parents[1]
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
+
+    from agent_transport import ack, local_fallback_enabled
+
+    db = _legacy_mongo_db() if local_fallback_enabled() else None
     agent = EngineeringAgent(db=db)
     poll_interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 
-    print(f"Engineering agent started. Polling MongoDB every {poll_interval}s...")
+    mode = "legacy MongoDB offline demo" if local_fallback_enabled() else "enterprise router"
+    print(f"Engineering agent started ({mode}). Polling every {poll_interval}s...")
 
     while True:
-        message = claim_next_message(db)
+        message = claim_next_message()
 
         if message is None:
-            # Nothing to do — wait and try again
             time.sleep(poll_interval)
             continue
 
-        # MongoDB adds a _id field that isn't JSON-serialisable; remove it
         message.pop("_id", None)
         print(f"\nPicked up message: {message['id']} ({message['task_type']})")
 
         response = agent.handle_message(message)
 
-        # None means a RecoverableError occurred — message was re-queued, nothing to write
         if response is None:
             print(f"Message {message['id']} re-queued pending token replenishment.")
             time.sleep(poll_interval)
             continue
 
-        # Write the response back so the PM agent can read it
-        write_response(db, response)
-        # MongoDB mutates the dict by adding _id (ObjectId) when inserting —
-        # pop it so json.dumps doesn't crash on the non-serialisable type.
+        deliver_response(db, response)
         response.pop("_id", None)
 
-        # Mark the original message as done (or failed)
-        final_status = "done" if response.get("status") == "done" else "error"
-        mark_source_done(db, message["id"], final_status, response.get("error", ""))
+        if local_fallback_enabled():
+            final_status = "done" if response.get("status") == "done" else "error"
+            mark_source_done_legacy(db, message["id"], final_status, response.get("error", ""))
+        else:
+            ack(str(message["id"]), "Engineering")
 
-        print(f"Response written for message {message['id']}. Status: {final_status}")
+        print(f"Response written for message {message['id']}. Status: {response.get('status')}")
         print(json.dumps(response, indent=2))

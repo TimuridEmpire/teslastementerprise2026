@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 from enterprise_paths import backlog_db_path
+from message_schema import EnvelopeInput, Message, normalize_envelope
 
 
 class AgentBacklog:
@@ -73,12 +74,13 @@ class AgentBacklog:
     # INTERACTION FUNCTIONS
     # ================================================================
 
-    def record_interaction(self, message: dict):
+    def record_interaction(self, message: EnvelopeInput):
         """
         Insert a message/task into the interactions table.
-        Pass in a dict matching the JSON schema.
+        Accepts a :class:`~message_schema.Message` or dict matching the JSON schema.
         Uses INSERT OR IGNORE so duplicate ids are skipped safely.
         """
+        env = normalize_envelope(message)
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -87,15 +89,15 @@ class AgentBacklog:
                     (id, timestamp, sender, recipient, task_type, context, payload, status, error)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    message.get("id"),
-                    message.get("timestamp", datetime.utcnow().isoformat()),
-                    message.get("sender", ""),
-                    message.get("recipient", ""),
-                    message.get("task_type", ""),
-                    json.dumps(message.get("context", {})),
-                    json.dumps(message.get("payload", {})),
-                    message.get("status", "pending"),
-                    message.get("error", "")
+                    env["id"],
+                    env["timestamp"] or datetime.utcnow().isoformat(),
+                    env["sender"],
+                    env["recipient"],
+                    env["task_type"],
+                    json.dumps(env["context"]),
+                    json.dumps(env["payload"]),
+                    env["status"],
+                    env["error"],
                 ))
                 conn.commit()
 
@@ -245,23 +247,17 @@ if __name__ == "__main__":
     db = AgentBacklog()
     db.clear_backlog()
    
-    # Test inserting a task matching the JSON schema
-    sample_message = {
-        "id": "req-001",
-        "timestamp": "2026-03-01T10:00:00Z",
-        "sender": "CEO",
-        "recipient": "HR",
-        "task_type": "TALENT_REALLOCATION",
-        "context": {
-            "quarter": "Q2",
-            "year": 2026
-        },
-        "payload": {
+    sample_message = Message.create(
+        sender="CEO",
+        recipient="HR",
+        task_type="TALENT_REALLOCATION",
+        context={"quarter": "Q2", "year": 2026},
+        payload={
             "task": "Hire 10 engineering agents, and fire all 20 marketing agents"
         },
-        "status": "pending",
-        "error": ""
-    }
+        message_id="req-001",
+    ).to_dict()
+    sample_message["timestamp"] = "2026-03-01T10:00:00Z"
 
     db.record_interaction(sample_message)
     print("Inserted sample interaction.")

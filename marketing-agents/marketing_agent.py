@@ -1,8 +1,8 @@
 import os
-from message_bus import get_messages_for, send_message
+from agent_transport import AGENT_CEO, AGENT_SALES, ack, drain_mailbox, local_fallback_enabled, nack, receive, submit
 from message_schema import Message
 from marketing_tools import plan_campaign, save_campaign, generate_email, generate_image_prompt
-from storage import storage
+from pm_storage import storage
 
 # --- INTEGRATION: Import the enterprise logger utilities ---
 from agent_logger import get_agent_logger, log_inter_agent_message
@@ -17,18 +17,34 @@ class MarketingAgent:
         self.logger = get_agent_logger(self.name)
 
     def run(self):
-        msgs = get_messages_for(self.name)
+        if local_fallback_enabled():
+            msgs = drain_mailbox(self.name)
+        else:
+            msgs = []
+            while True:
+                msg = receive(self.name)
+                if msg is None:
+                    break
+                msgs.append(msg)
+
         for m in msgs:
             # --- INTEGRATION: Log the received envelope cleanly ---
             log_inter_agent_message(self.logger, m, direction="RECEIVING")
-            
-            task_type = m.get('task_type')
-            if task_type == "LAUNCH_CAMPAIGN":
-                self.handle_launch_campaign(m)
-            elif task_type == "PM_REPORT":
-                self.handle_pm_report(m)
-            else:
-                self.logger.warning(f"MarketingAgent: Unhandled {task_type}")
+
+            try:
+                task_type = m.get('task_type')
+                if task_type == "LAUNCH_CAMPAIGN":
+                    self.handle_launch_campaign(m)
+                elif task_type == "PM_REPORT":
+                    self.handle_pm_report(m)
+                else:
+                    self.logger.warning(f"MarketingAgent: Unhandled {task_type}")
+                if not local_fallback_enabled():
+                    ack(str(m.get("id", "")), self.name)
+            except Exception as exc:
+                if not local_fallback_enabled():
+                    nack(str(m.get("id", "")), self.name, reason=str(exc))
+                raise
 
     def handle_pm_report(self, msg):
         self.logger.info(f"MarketingAgent received PM report: {msg.get('id')}")
@@ -58,7 +74,7 @@ class MarketingAgent:
             # --- INTEGRATION: Create, log, and send the budget approval message ---
             approval_msg = Message.create(
                 sender=self.name,
-                recipient="CEO",
+                recipient=AGENT_CEO,
                 task_type="BUDGET_APPROVAL",
                 context={"project_id": project_id},
                 payload={
@@ -70,7 +86,7 @@ class MarketingAgent:
                 }
             )
             log_inter_agent_message(self.logger, approval_msg, direction="SENDING")
-            send_message(approval_msg)
+            submit(approval_msg)
             
             storage.add_project_event(
                 source=self.name,
@@ -95,7 +111,7 @@ class MarketingAgent:
             # --- INTEGRATION: Create, log, and send the campaign launch message ---
             launch_msg = Message.create(
                 sender=self.name,
-                recipient="Sales",
+                recipient=AGENT_SALES,
                 task_type="CAMPAIGN_LAUNCHED",
                 context={"project_id": project_id},
                 payload={
@@ -107,7 +123,7 @@ class MarketingAgent:
                 }
             )
             log_inter_agent_message(self.logger, launch_msg, direction="SENDING")
-            send_message(launch_msg)
+            submit(launch_msg)
             
             self.logger.info("MarketingAgent: CAMPAIGN_LAUNCHED sent to Sales")
             

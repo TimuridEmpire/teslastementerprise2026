@@ -12,6 +12,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+from message_schema import EnvelopeInput, envelope_dict
+
 
 class DistributionTokenError(Exception):
     """Raised when a token-gated send cannot be completed (no persist, no delivery)."""
@@ -24,12 +26,13 @@ class DistributionTokenError(Exception):
         self.cost = cost
 
 
-def resolve_distribution_scenario(envelope: Dict[str, Any]) -> Optional[str]:
+def resolve_distribution_scenario(envelope: EnvelopeInput) -> Optional[str]:
     """
     Scenario for token accounting. Explicit context wins; otherwise no gating for that message.
     Supported keys: ``distribution_scenario``, ``prompt_scenario``.
     """
-    ctx = envelope.get("context")
+    env = envelope_dict(envelope)
+    ctx = env.get("context")
     if not isinstance(ctx, dict):
         return None
     for key in ("distribution_scenario", "prompt_scenario"):

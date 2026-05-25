@@ -6,7 +6,7 @@ import hashlib
 
 # We trust these imported functions to securely handle the .env logic now
 from enterprise_paths import inter_agent_mongo_db_name, inter_agent_mongo_uri
-from message_bus import normalize_envelope
+from message_schema import EnvelopeInput, normalize_envelope
 
 if TYPE_CHECKING:
     from agent_backlog import AgentBacklog
@@ -62,7 +62,7 @@ class InterAgentMongoStore:
         self._envelopes.create_index("id", unique=True)
         self._inbox.create_index([("recipient", 1), ("enqueued_at", 1)])
 
-    def record_and_enqueue(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+    def record_and_enqueue(self, raw: EnvelopeInput) -> Dict[str, Any]:
         """
         Normalize the envelope, persist to ``envelopes`` (idempotent on id),
         enqueue for ``recipient``, optionally mirror to SQLite.
