@@ -6,7 +6,7 @@
 import type {
   ApiAgent, ApiRegistration, ApiQueueItem, ApiAuditEvent,
   ApiHealth, ApiInterventionBody, ApiEnvelope, ApiQueueItemWire,
-  DeliveryState, MessageStatus,
+  DeliveryState, MessageStatus, ApiArtifact,
 } from './api-types'
 
 const BASE         = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
@@ -249,5 +249,19 @@ export const api = {
         subjectId ? `/audit?limit=${limit}&subject_id=${subjectId}` : `/audit?limit=${limit}`,
         adminH()
       ),
+  },
+
+  artifacts: {
+    // GET /artifacts  (admin)
+    list: (agentName?: string, limit = 20) => {
+      const params = new URLSearchParams()
+      if (agentName) params.set('agent', agentName)
+      params.set('limit', String(limit))
+      return get<ApiArtifact[]>(`/artifacts?${params.toString()}`, adminH())
+    },
+
+    // GET /artifacts/{artifact_id}  (admin)
+    get: (artifactId: string) =>
+      get<ApiArtifact>(`/artifacts/${encodeURIComponent(artifactId)}`, adminH()),
   },
 }

@@ -87,6 +87,20 @@ export interface ApiAuditEvent {
   created_at: string
 }
 
+export interface ApiArtifact {
+  artifact_id:       string
+  agent_name:        string
+  artifact_type:     string
+  title:             string
+  filename:          string
+  agent_slug:        string
+  created_at:        string
+  metadata:          Record<string, unknown>
+  source_message_id: string | null
+  source_task_type:  string | null
+  content?:          string
+}
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 export interface ApiHealth {
   status:  string

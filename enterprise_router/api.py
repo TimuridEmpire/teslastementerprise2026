@@ -4,6 +4,7 @@ from typing import Any
 
 from .config import RouterSettings
 from .exceptions import AccessError, RegistrationError, ValidationError
+from .agent_artifacts import get_agent_artifact, list_agent_artifacts
 from .models import AgentRecord, MessageEnvelope, RegistrationRequest, RoutingHints
 from .service import EnterpriseRouter
 
@@ -349,6 +350,24 @@ def create_app(settings: RouterSettings | None = None):
             return router.list_audit_log(limit=limit, subject_id=subject_id)
         except Exception as exc:
             handle_router_error(exc)
+
+    @app.get("/artifacts")
+    def artifacts(
+        agent: str | None = None,
+        limit: int = 20,
+        _: None = Depends(require_admin),
+    ) -> list[dict[str, Any]]:
+        return list_agent_artifacts(agent_name=agent, limit=limit)
+
+    @app.get("/artifacts/{artifact_id}")
+    def artifact_detail(
+        artifact_id: str,
+        _: None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        artifact = get_agent_artifact(artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        return artifact
 
     @app.post("/agents/{agent_name}/issue-api-key")
     def issue_api_key(agent_name: str, _: None = Depends(require_admin)) -> dict[str, Any]:

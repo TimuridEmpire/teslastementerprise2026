@@ -33,6 +33,166 @@ def agent_slug(agent_name: str) -> str:
     return _slugify(agent_name, max_len=64)
 
 
+def _artifact_root() -> Path:
+    return Path(artifacts_dir()).resolve()
+
+
+def _artifact_index_path() -> Path:
+    return _artifact_root() / "index.jsonl"
+
+
+def _public_record(record: JsonDict) -> JsonDict:
+    return {
+        "artifact_id": str(record.get("artifact_id") or ""),
+        "agent_name": str(record.get("agent_name") or ""),
+        "artifact_type": str(record.get("artifact_type") or "document"),
+        "title": str(record.get("title") or "Untitled artifact"),
+        "filename": str(record.get("filename") or ""),
+        "agent_slug": str(record.get("agent_slug") or agent_slug(str(record.get("agent_name") or ""))),
+        "created_at": str(record.get("created_at") or ""),
+        "metadata": record.get("metadata") if isinstance(record.get("metadata"), dict) else {},
+        "source_message_id": record.get("source_message_id") if record.get("source_message_id") else None,
+        "source_task_type": record.get("source_task_type") if record.get("source_task_type") else None,
+    }
+
+
+def _append_index_record(record: JsonDict) -> None:
+    root = _artifact_root()
+    root.mkdir(parents=True, exist_ok=True)
+    index_path = _artifact_index_path()
+    with index_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_public_record(record), default=str) + "\n")
+
+
+def _read_index_records() -> list[JsonDict]:
+    index_path = _artifact_index_path()
+    if not index_path.exists():
+        return []
+
+    records: list[JsonDict] = []
+    for line in index_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(raw, dict):
+            public = _public_record(raw)
+            if public["artifact_id"] and public["filename"]:
+                records.append(public)
+    return records
+
+
+def _artifact_path_from_record(record: JsonDict) -> Path | None:
+    root = _artifact_root()
+    slug = _slugify(str(record.get("agent_slug") or record.get("agent_name") or ""))
+    filename = Path(str(record.get("filename") or "")).name
+    if not slug or not filename:
+        return None
+    candidate = (root / slug / filename).resolve()
+    if not candidate.is_relative_to(root):
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _record_from_markdown(path: Path) -> JsonDict | None:
+    root = _artifact_root()
+    try:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            return None
+        text = resolved.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    title = resolved.stem
+    for line in text.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip() or title
+            break
+
+    artifact_id_match = re.search(r"(art-[a-f0-9]+)", resolved.name)
+    artifact_id = artifact_id_match.group(1) if artifact_id_match else f"file-{resolved.stem}"
+    slug = resolved.parent.name
+    return {
+        "artifact_id": artifact_id,
+        "agent_name": slug.replace("-", " ").title(),
+        "artifact_type": "document",
+        "title": title,
+        "filename": resolved.name,
+        "agent_slug": slug,
+        "created_at": datetime.fromtimestamp(resolved.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "metadata": {},
+        "source_message_id": None,
+        "source_task_type": None,
+    }
+
+
+def _scan_markdown_records() -> list[JsonDict]:
+    root = _artifact_root()
+    if not root.exists():
+        return []
+    records: list[JsonDict] = []
+    for path in root.glob("*/*.md"):
+        record = _record_from_markdown(path)
+        if record:
+            records.append(record)
+    return records
+
+
+def list_agent_artifacts(
+    *, agent_name: str | None = None, limit: int = 20
+) -> list[JsonDict]:
+    """List artifact metadata without exposing local filesystem paths."""
+    indexed = _read_index_records()
+    seen = {record["artifact_id"] for record in indexed}
+    records = indexed + [
+        record for record in _scan_markdown_records() if record["artifact_id"] not in seen
+    ]
+
+    if agent_name:
+        slug = agent_slug(agent_name)
+        records = [
+            record
+            for record in records
+            if agent_slug(str(record.get("agent_name") or "")) == slug
+            or str(record.get("agent_slug") or "") == slug
+        ]
+
+    indexed_order = {record["artifact_id"]: i for i, record in enumerate(indexed)}
+    records.sort(
+        key=lambda record: (
+            str(record.get("created_at") or ""),
+            indexed_order.get(str(record.get("artifact_id") or ""), -1),
+        ),
+        reverse=True,
+    )
+    return records[: max(0, int(limit))]
+
+
+def get_agent_artifact(artifact_id: str) -> JsonDict | None:
+    """Return one artifact with markdown content, or None when not found/safe."""
+    target = (artifact_id or "").strip()
+    if not target:
+        return None
+
+    for record in list_agent_artifacts(agent_name=None, limit=10_000):
+        if record.get("artifact_id") != target:
+            continue
+        path = _artifact_path_from_record(record)
+        if path is None:
+            return None
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return {**_public_record(record), "content": content}
+    return None
+
+
 def envelope_prompt_json(envelope: JsonDict) -> JsonDict:
     """
     Normalize prompt-oriented fields from a router envelope for logging or handlers.
@@ -98,6 +258,8 @@ def write_agent_artifact(
     metadata: Optional[JsonDict] = None,
     filename: Optional[str] = None,
     router: Optional[EnterpriseRouter] = None,
+    source_message_id: Optional[str] = None,
+    source_task_type: Optional[str] = None,
 ) -> JsonDict:
     """
     Write a markdown artifact under ``artifacts/<agent-slug>/``.
@@ -135,8 +297,13 @@ def write_agent_artifact(
         "title": title,
         "path": str(out_path),
         "filename": out_name,
+        "agent_slug": slug,
         "created_at": created_at,
+        "metadata": metadata or {},
+        "source_message_id": source_message_id,
+        "source_task_type": source_task_type,
     }
+    _append_index_record(record)
 
     if router is not None:
         router._audit(

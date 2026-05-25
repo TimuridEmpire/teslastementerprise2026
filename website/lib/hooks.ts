@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
-import type { ApiAgent, ApiHealth, ApiAuditEvent, ApiQueueItem, ApiRegistration } from './api-types'
+import type { ApiAgent, ApiHealth, ApiAuditEvent, ApiQueueItem, ApiRegistration, ApiArtifact } from './api-types'
 
 // ─── Generic polling hook ─────────────────────────────────────────────────────
 
@@ -78,4 +78,17 @@ export function useQueue(recipient: string, apiKey: string) {
     [recipient, apiKey, enabled]
   )
   return { ...usePolling<ApiQueueItem[] | null>(fetcher, 4_000), enabled }
+}
+
+/** GET /artifacts + newest artifact detail every 6 s */
+export function useArtifacts(agentName: string, limit = 20) {
+  const fetcher = useCallback(async () => {
+    const artifacts = await api.artifacts.list(agentName, limit)
+    if (!artifacts.length) return artifacts
+
+    const latest = await api.artifacts.get(artifacts[0].artifact_id)
+    return [latest, ...artifacts.slice(1)]
+  }, [agentName, limit])
+
+  return usePolling<ApiArtifact[]>(fetcher, 6_000)
 }

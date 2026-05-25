@@ -7,10 +7,10 @@ import {
   Crown, Package, Code2, Users, TrendingUp, Megaphone,
   DollarSign, CheckCircle2, Clock, AlertCircle, XCircle,
   Send, ChevronRight, Zap, Shield, Activity, BarChart3,
-  MessageSquare, History, Target, Circle,
+  MessageSquare, FileText, Target, Circle,
 } from 'lucide-react'
-import { AGENTS, TASKS, MESSAGES, ACTIVITY_FEED } from '@/lib/mock-data'
-import { useQueue } from '@/lib/hooks'
+import { AGENTS, TASKS, MESSAGES } from '@/lib/mock-data'
+import { useArtifacts, useQueue } from '@/lib/hooks'
 import type { AgentId, TaskStatus } from '@/lib/types'
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts'
 import WorkerAgentsDropdown, { type WorkerAgent } from '@/components/agents/WorkerAgentsDropdown'
@@ -125,7 +125,9 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
 
   // Live queue; skips fetching when this agent has no configured key.
   const { data: queue, enabled: queueEnabled, error: queueError } = useQueue(routerRecipient, routerApiKey)
+  const { data: artifacts, error: artifactError } = useArtifacts(routerRecipient, 10)
   const hasRouterQueue = queue !== null
+  const latestArtifact = artifacts?.[0] ?? null
 
   const agentTasks    = TASKS.filter(t => t.assignedTo === agent.id)
   const agentMessages = hasRouterQueue
@@ -141,7 +143,6 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
       payload: item.envelope.payload,
     }))
     : MESSAGES.filter(m => m.sender === agent.id || m.recipient === agent.id)
-  const agentActivity = ACTIVITY_FEED.filter(e => e.agentId === agent.id)
 
   const radarData = [
     { subject: 'Execution',   value: agent.successRate },
@@ -496,27 +497,63 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
             </div>
           </div>
 
-          {/* Activity */}
+          {/* Agent outputs */}
           <div className="card p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <History size={12} style={{ color: 'var(--text-3)' }} />
-              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Recent Activity</h3>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <FileText size={12} style={{ color }} />
+                <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Agent Outputs</h3>
+              </div>
+              <span className="text-[10.5px] font-mono" style={{ color: latestArtifact ? 'var(--green)' : 'var(--text-3)' }}>
+                {latestArtifact ? 'live' : 'waiting'}
+              </span>
             </div>
-            <div className="space-y-3">
-              {agentActivity.slice(0, 4).map((e) => (
-                <div key={e.id} className="flex gap-2.5">
-                  <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                    style={{ background: e.severity === 'error' ? 'var(--red)' : e.severity === 'warning' ? 'var(--amber)' : color }} />
-                  <div>
-                    <div className="text-[11px] font-medium" style={{ color: 'var(--text-1)' }}>{e.title}</div>
-                    <div className="text-[10px] mt-0.5 leading-relaxed" style={{ color: 'var(--text-3)' }}>{e.description}</div>
+            {latestArtifact ? (
+              <div className="space-y-3">
+                <div>
+                  <div className="text-[12px] font-semibold leading-snug" style={{ color: 'var(--text-1)' }}>
+                    {latestArtifact.title}
+                  </div>
+                  <div className="text-[10px] font-mono mt-1 flex flex-wrap gap-x-2 gap-y-1" style={{ color: 'var(--text-3)' }}>
+                    <span>{latestArtifact.artifact_type}</span>
+                    <span>·</span>
+                    <span>{new Date(latestArtifact.created_at).toLocaleString()}</span>
+                    {latestArtifact.source_task_type && (
+                      <>
+                        <span>·</span>
+                        <span>{latestArtifact.source_task_type}</span>
+                      </>
+                    )}
                   </div>
                 </div>
-              ))}
-              {agentActivity.length === 0 && (
-                <div className="text-center py-4 text-[11px]" style={{ color: 'var(--text-3)' }}>No recent activity</div>
-              )}
-            </div>
+                <pre
+                  className="rounded-lg p-3 text-[11px] leading-relaxed overflow-auto"
+                  style={{
+                    maxHeight: 360,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    color: 'var(--text-2)',
+                    background: 'rgba(255,255,255,0.025)',
+                    border: '1px solid var(--border)',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  {latestArtifact.content ?? 'Artifact content is loading...'}
+                </pre>
+                {artifacts && artifacts.length > 1 && (
+                  <div className="text-[10.5px] font-mono" style={{ color: 'var(--text-3)' }}>
+                    {artifacts.length - 1} older {artifacts.length - 1 === 1 ? 'output' : 'outputs'} available
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div
+                className="rounded-lg text-center px-4 py-8 text-[11px] leading-relaxed"
+                style={{ color: 'var(--text-3)', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)' }}
+              >
+                {artifactError ? 'Unable to load agent outputs from the router.' : 'No outputs yet. Send an instruction or run the initiation workflow.'}
+              </div>
+            )}
           </div>
         </motion.div>
       </div>
