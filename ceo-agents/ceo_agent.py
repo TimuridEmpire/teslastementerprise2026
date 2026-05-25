@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import requests
 from agent_logger import get_agent_logger
+from enterprise_router.agent_artifacts import write_agent_artifact
 from enterprise_router_client import EnterpriseRouterClient
 from message_schema import Message
 
@@ -230,6 +231,18 @@ class CeoAgent(ThreadSafeAgentMixin):
                     "strategic_decision": strategic_decision,
                     "final_summary": final_summary,
                 }
+                artifact = self._write_strategy_artifact_unlocked(
+                    title="CEO executive summary",
+                    body=self._format_reasoning_artifact_body(result),
+                    artifact_type="strategy",
+                    metadata={
+                        "source": "execute_reasoning_loop",
+                        "ceo_request": message,
+                        "cycle_id": result["id"],
+                    },
+                )
+                if artifact:
+                    result["artifact"] = artifact
                 return result
             except Exception as exc:
                 self._record_failure_unlocked()
@@ -368,6 +381,15 @@ class CeoAgent(ThreadSafeAgentMixin):
             self.logger.info("Starting company oversight cycle.")
             data = self._gather_information_unlocked(subordinate_agents)
             decision = self._make_strategic_decision_unlocked(data)
+            self._write_strategy_artifact_unlocked(
+                title="CEO quarterly strategy",
+                body=str(decision),
+                artifact_type="strategy",
+                metadata={
+                    "source": "oversee_company",
+                    "departments": list(subordinate_agents),
+                },
+            )
             return decision
 
     def _refresh_child_signal_from_context_unlocked(self, context: Dict[str, Any]) -> None:
@@ -475,6 +497,38 @@ class CeoAgent(ThreadSafeAgentMixin):
 
     def _record_failure_unlocked(self) -> None:
         self.metrics["failure_count"] = int(self.metrics.get("failure_count", 0)) + 1
+
+    def _format_reasoning_artifact_body(self, result: Dict[str, Any]) -> str:
+        sections = [
+            f"## CEO request\n\n{result.get('message', '')}",
+            "## Department reports\n\n"
+            + "\n".join(f"- {line}" for line in (result.get("department_reports") or [])),
+            f"## Strategic decision\n\n{result.get('strategic_decision', '')}",
+            f"## Executive summary\n\n{result.get('final_summary', '')}",
+        ]
+        return "\n\n".join(sections)
+
+    def _write_strategy_artifact_unlocked(
+        self,
+        *,
+        title: str,
+        body: str,
+        artifact_type: str = "strategy",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            record = write_agent_artifact(
+                self.name,
+                title=title,
+                body=body,
+                artifact_type=artifact_type,
+                metadata=metadata,
+            )
+            self.logger.info("Wrote CEO artifact to %s", record.get("path"))
+            return record
+        except Exception as exc:
+            self.logger.warning("Failed to write CEO artifact: %s", exc)
+            return None
 
     def _metrics_snapshot_unlocked(self) -> Dict[str, Any]:
         tasks = self.metrics.get("tasks_per_agent")

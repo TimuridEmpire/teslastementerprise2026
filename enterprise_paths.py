@@ -17,6 +17,7 @@ ENTERPRISE_ROUTER_ADMIN_SECRET   — Admin header for registration / agent setup
 ENTERPRISE_ROUTER_SHARED_SECRET  — Registration request secret
 ENTERPRISE_ROUTER_BACKEND        — sqlite (default) or mongo
 ENTERPRISE_ROUTER_PORT           — API listen port (default 8765)
+ENTERPRISE_ARTIFACTS_DIR         — Agent markdown artifacts (default: <repo>/artifacts)
 """
 
 from __future__ import annotations
@@ -63,3 +64,11 @@ def inter_agent_mongo_db_name() -> str:
     Returns the specific database name.
     """
     return os.getenv("ENTERPRISE_MONGO_INTER_AGENT_DB", "enterprise_inter_agent")
+
+
+def artifacts_dir() -> str:
+    """Directory where agents write markdown deliverables for the website."""
+    env = os.environ.get("ENTERPRISE_ARTIFACTS_DIR")
+    if env:
+        return os.path.abspath(env)
+    return os.path.join(_REPO_ROOT, "artifacts")

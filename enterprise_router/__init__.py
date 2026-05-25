@@ -10,9 +10,21 @@ from .models import (
     RoutingHints,
 )
 from .router_storage import RouterStorage, create_storage
+from .agent_artifacts import (
+    agent_slug,
+    envelope_prompt_json,
+    poll_one_router_message,
+    poll_router_prompts_loop,
+    write_agent_artifact,
+)
 from .service import EnterpriseRouter
 
 __all__ = [
+    "agent_slug",
+    "envelope_prompt_json",
+    "poll_one_router_message",
+    "poll_router_prompts_loop",
+    "write_agent_artifact",
     "AccessError",
     "AgentApiKeyRecord",
     "AgentRecord",
