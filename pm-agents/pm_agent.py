@@ -1,6 +1,6 @@
 import os
 from typing import Optional, Dict, Any
-from agent_transport import AGENT_MARKETING, drain_mailbox, submit
+from agent_transport import AGENT_MARKETING, ack, drain_mailbox, local_fallback_enabled, nack, receive, submit
 from message_schema import Message
 from pm_tools import generate_features_llm, moscow_prioritize, create_project, add_request_to_project
 from pm_storage import storage
@@ -17,18 +17,34 @@ class PMAgent:
         self.logger = get_agent_logger(self.name)
 
     def run(self):
-        msgs = drain_mailbox(self.name)
+        if local_fallback_enabled():
+            msgs = drain_mailbox(self.name)
+        else:
+            msgs = []
+            while True:
+                msg = receive(self.name)
+                if msg is None:
+                    break
+                msgs.append(msg)
+
         for m in msgs:
             # --- INTEGRATION: Log the received envelope cleanly ---
             log_inter_agent_message(self.logger, m, direction="RECEIVING")
-            
-            task = m.get('task_type')
-            if task == "DEFINE_Q2_ROADMAP":
-                self.handle_define_roadmap(m)
-            elif task == "REQUEST_FEATURES":
-                self.handle_feature_request(m)
-            else:
-                self.logger.warning(f"PMAgent: Unhandled task {task}")
+
+            try:
+                task = m.get('task_type')
+                if task == "DEFINE_Q2_ROADMAP":
+                    self.handle_define_roadmap(m)
+                elif task == "REQUEST_FEATURES":
+                    self.handle_feature_request(m)
+                else:
+                    self.logger.warning(f"PMAgent: Unhandled task {task}")
+                if not local_fallback_enabled():
+                    ack(str(m.get("id", "")), self.name)
+            except Exception as exc:
+                if not local_fallback_enabled():
+                    nack(str(m.get("id", "")), self.name, reason=str(exc))
+                raise
 
     def _ensure_active_project(self, project_id: Optional[str]) -> Optional[Dict[str, Any]]:
         if not project_id:

@@ -4,14 +4,17 @@ from typing import Any
 
 from .config import RouterSettings
 from .exceptions import AccessError, RegistrationError, ValidationError
+from .agent_artifacts import get_agent_artifact, list_agent_artifacts
 from .models import AgentRecord, MessageEnvelope, RegistrationRequest, RoutingHints
 from .service import EnterpriseRouter
 
 try:  # pragma: no cover - optional dependency
     from fastapi import Depends, FastAPI, Header, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
 except ImportError:  # pragma: no cover - optional dependency
     FastAPI = None
+    CORSMiddleware = None
     BaseModel = object
     Depends = Header = Field = HTTPException = None
 
@@ -96,6 +99,18 @@ def create_app(settings: RouterSettings | None = None):
         shared_secret=settings.shared_secret,
     )
     app = FastAPI(title="Enterprise Router API", version="0.2.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+        ],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def handle_router_error(exc: Exception) -> None:
         if isinstance(exc, AccessError):
@@ -335,6 +350,24 @@ def create_app(settings: RouterSettings | None = None):
             return router.list_audit_log(limit=limit, subject_id=subject_id)
         except Exception as exc:
             handle_router_error(exc)
+
+    @app.get("/artifacts")
+    def artifacts(
+        agent: str | None = None,
+        limit: int = 20,
+        _: None = Depends(require_admin),
+    ) -> list[dict[str, Any]]:
+        return list_agent_artifacts(agent_name=agent, limit=limit)
+
+    @app.get("/artifacts/{artifact_id}")
+    def artifact_detail(
+        artifact_id: str,
+        _: None = Depends(require_admin),
+    ) -> dict[str, Any]:
+        artifact = get_agent_artifact(artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        return artifact
 
     @app.post("/agents/{agent_name}/issue-api-key")
     def issue_api_key(agent_name: str, _: None = Depends(require_admin)) -> dict[str, Any]:

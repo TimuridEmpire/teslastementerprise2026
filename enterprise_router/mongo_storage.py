@@ -24,10 +24,12 @@ class MongoStorage(RouterStorage):
     ) -> None:
         try:
             from pymongo import MongoClient
+            from pymongo import ReturnDocument
         except ImportError as exc:
             raise ImportError("MongoStorage requires pymongo.") from exc
 
         self._client = MongoClient(uri or inter_agent_mongo_uri())
+        self._return_document_after = ReturnDocument.AFTER
         self._db = self._client[db_name or inter_agent_mongo_db_name()]
         self._agents = self._db["router_agents"]
         self._registrations = self._db["router_registrations"]
@@ -238,6 +240,7 @@ class MongoStorage(RouterStorage):
             {"recipient": recipient, "state": "queued"},
             {"$set": {"state": "leased", "lease_until": lease_until, "updated_at": lease_until}},
             sort=[("priority", -1), ("enqueued_at", 1)],
+            return_document=self._return_document_after,
         )
         if not doc:
             return None

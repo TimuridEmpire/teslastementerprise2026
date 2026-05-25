@@ -84,6 +84,32 @@ def test_message_queue_lease_and_done(store):
     assert store.lease_next_message("HR", "2026-01-01T00:07:00Z") is None
 
 
+def test_queue_record_preserves_router_metadata_for_api_shape(store):
+    store.register_agent(AgentRecord(agent_name="HR", role="hr"))
+    env = _envelope("CEO", "HR", "PING")
+    store.insert_message(
+        env,
+        {
+            "priority": 11,
+            "dedupe_key": "ping-1",
+            "ttl_seconds": 120,
+            "ttl_expires_at": "2026-01-01T00:02:00Z",
+            "enqueued_at": env.timestamp,
+        },
+    )
+
+    [record] = store.get_queue_records("HR")
+
+    assert record["priority"] == 11
+    assert record["attempts"] == 0
+    assert record["state"] == "queued"
+    assert record["lease_until"] is None
+    assert record["dedupe_key"] == "ping-1"
+    assert record["routing"]["ttl_seconds"] == 120
+    assert record["routing"]["ttl_expires_at"] == "2026-01-01T00:02:00Z"
+    assert record["error"] == ""
+
+
 def test_dedupe_find(store):
     env = _envelope("CEO", "HR", "TASK")
     routing = {

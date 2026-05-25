@@ -1,9 +1,8 @@
 """
 Shared enterprise-router transport for all department agents.
 
-When ``ENTERPRISE_ROUTER_URL``, ``ENTERPRISE_AGENT_NAME``, and ``ENTERPRISE_AGENT_API_KEY``
-are set, messages use the router HTTP API. Otherwise agents fall back to the in-process
-``MessageBus`` (and optional legacy Mongo paths in Engineering).
+Runtime agent-to-agent messages must use the Enterprise Router HTTP API. The in-process
+``MessageBus`` is available only when an explicit offline/demo flag is set.
 """
 
 from __future__ import annotations
@@ -13,9 +12,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
 
-from enterprise_router_client import EnterpriseRouterClient, router_configured
-from message_bus import MessageBus, normalize_envelope, send_message
-from message_schema import Message
+from enterprise_router_client import (
+    EnterpriseRouterClient,
+    router_agent_name,
+    router_configured,
+    router_missing_config,
+)
+from message_bus import MessageBus
+from message_schema import EnvelopeInput, Message, normalize_envelope
 
 _default_bus: MessageBus | None = None
 
@@ -46,18 +50,19 @@ def make_envelope(
     error: str = "",
     message_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    data = Message.create(
-        sender=sender,
-        recipient=recipient,
-        task_type=task_type,
-        context=context,
-        payload=payload,
-    ).to_dict()
-    if message_id:
-        data["id"] = message_id
-    data["status"] = status
-    data["error"] = error or ""
-    return data
+    """Build and validate a canonical envelope dict."""
+    return normalize_envelope(
+        Message.create(
+            sender=sender,
+            recipient=recipient,
+            task_type=task_type,
+            context=context,
+            payload=payload,
+            status=status,
+            error=error,
+            message_id=message_id,
+        )
+    )
 
 
 def _local_bus() -> MessageBus:
@@ -67,55 +72,114 @@ def _local_bus() -> MessageBus:
     return _default_bus
 
 
-def client() -> EnterpriseRouterClient | None:
-    return EnterpriseRouterClient.from_env()
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def local_fallback_enabled() -> bool:
+    return _env_flag_enabled("ENTERPRISE_ROUTER_OFFLINE_DEMO")
+
+
+def require_router_configured(agent_name: str | None = None) -> None:
+    if router_configured() or not router_missing_config(agent_name):
+        return
+    if local_fallback_enabled():
+        return
+    missing = router_missing_config(agent_name)
+    detail = ", ".join(missing) if missing else "complete router credentials"
+    raise RuntimeError(
+        "Enterprise Router is required for runtime agent-to-agent communication. "
+        f"Missing {detail}. Set ENTERPRISE_ROUTER_OFFLINE_DEMO=1 only for tests "
+        "or offline demos that intentionally use the local MessageBus."
+    )
+
+
+def client(agent_name: str | None = None) -> EnterpriseRouterClient | None:
+    return EnterpriseRouterClient.from_env(agent_name=agent_name)
 
 
 def submit(
-    envelope: Union[Message, dict[str, Any]],
+    envelope: EnvelopeInput,
     *,
     routing_hints: dict[str, Any] | None = None,
 ) -> str:
     """Submit an envelope; returns message id."""
-    if isinstance(envelope, Message):
-        raw = envelope.to_dict()
-    else:
-        raw = normalize_envelope(envelope)
-    if router_configured():
-        c = client()
+    raw = normalize_envelope(envelope)
+    sender = str(raw.get("sender") or "")
+    require_router_configured(sender)
+    if not local_fallback_enabled():
+        c = client(sender)
         assert c is not None
         return c.submit_message(raw, routing_hints=routing_hints)
     _local_bus().send(raw)
     return str(raw.get("id", ""))
 
 
+send = submit
+
+
 def receive(recipient: str | None = None) -> dict[str, Any] | None:
     """Lease the next message for ``recipient`` (defaults to env agent name)."""
-    if router_configured():
-        c = client()
+    who = (recipient or router_agent_name() or "").strip()
+    require_router_configured(who)
+    if not local_fallback_enabled():
+        c = client(who)
         assert c is not None
-        who = (recipient or c.agent_name).strip()
         return c.fetch_next(who)
-    who = (recipient or os.getenv("ENTERPRISE_AGENT_NAME") or "").strip()
     if not who:
         return None
     return _local_bus().receive(who)
 
 
+fetch = receive
+
+
 def ack(message_id: str, recipient: str | None = None) -> None:
-    if router_configured():
-        c = client()
+    who = (recipient or router_agent_name() or "").strip()
+    require_router_configured(who)
+    if not local_fallback_enabled():
+        c = client(who)
         assert c is not None
-        c.ack(message_id, recipient)
+        c.ack(message_id, who)
         return
     # In-process mailbox: receive already removed the message.
 
 
-def drain_mailbox(agent_name: str) -> list[dict[str, Any]]:
-    """Fetch and ack all queued messages for an agent (router or local peek)."""
-    from message_bus import get_messages_for
+def nack(message_id: str, recipient: str | None = None, *, reason: str) -> None:
+    who = (recipient or router_agent_name() or "").strip()
+    require_router_configured(who)
+    if not local_fallback_enabled():
+        c = client(who)
+        assert c is not None
+        c.nack(message_id, reason, who)
+        return
+    # In-process mailbox has no lease state to reject.
 
-    return get_messages_for(agent_name)
+
+def drain_mailbox(agent_name: str) -> list[dict[str, Any]]:
+    """Fetch and ack all queued messages for an agent (router or explicit local demo)."""
+    require_router_configured(agent_name)
+    if not local_fallback_enabled():
+        c = client(agent_name)
+        assert c is not None
+        drained: list[dict[str, Any]] = []
+        while True:
+            envelope = c.fetch_next(agent_name)
+            if not envelope:
+                break
+            drained.append(envelope)
+            message_id = envelope.get("id")
+            if message_id:
+                c.ack(str(message_id), agent_name)
+        return drained
+
+    drained = []
+    while True:
+        envelope = _local_bus().receive(agent_name)
+        if not envelope:
+            break
+        drained.append(envelope)
+    return drained
 
 
 def delegate(

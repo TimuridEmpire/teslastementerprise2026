@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from message_bus import normalize_envelope
+from message_schema import Message, normalize_envelope
 
 from .exceptions import AccessError, RegistrationError, ValidationError
 from .models import (
@@ -195,8 +195,8 @@ class EnterpriseRouter:
         return raw
 
     def submit_message(self, envelope: MessageEnvelope, hints: RoutingHints) -> str:
-        raw = normalize_envelope(envelope.to_dict())
-        env = MessageEnvelope(**{k: raw[k] for k in MessageEnvelope.__dataclass_fields__})
+        raw = normalize_envelope(envelope)
+        env = Message.from_dict(raw)
         eid = (env.id or "").strip()
         recipient = (env.recipient or "").strip()
         sender = (env.sender or "").strip()
@@ -250,16 +250,15 @@ class EnterpriseRouter:
         import uuid
 
         priority_map = {"low": 0, "normal": 5, "high": 10, "critical": 20}
-        envelope = MessageEnvelope(
-            id=f"mgr-{uuid.uuid4().hex[:8]}",
-            timestamp=_utc_now(),
+        envelope = Message.create(
             sender="MANAGER",
             recipient=recipient,
             task_type=task_type,
             context={**(context or {}), "urgency": urgency},
             payload={**(payload or {}), "instruction": instruction},
-            status="pending",
+            message_id=f"mgr-{uuid.uuid4().hex[:8]}",
         )
+        envelope.timestamp = _utc_now()
         hints = RoutingHints(
             priority=priority_map.get((urgency or "normal").lower(), 5),
             requires_response=requires_response,
@@ -270,7 +269,8 @@ class EnterpriseRouter:
 
     def _record_to_queued(self, record: dict[str, Any]) -> QueuedMessage:
         msg = record.get("message") or {}
-        env = MessageEnvelope(**{k: msg.get(k) for k in MessageEnvelope.__dataclass_fields__})
+        env = Message.from_dict(msg)
+        routing = record.get("routing") or {}
         return QueuedMessage(
             queue_id=record.get("message_id", ""),
             message_id=record.get("message_id", ""),
@@ -278,7 +278,14 @@ class EnterpriseRouter:
             envelope=env,
             priority=int(record.get("priority", 0)),
             state=record.get("state", "queued"),
-            lease_owner=record.get("lease_until"),
+            attempts=int(record.get("attempts", 0)),
+            lease_until=record.get("lease_until"),
+            blocked_reason=record.get("error") or "",
+            ttl_seconds=routing.get("ttl_seconds"),
+            dedupe_key=record.get("dedupe_key"),
+            enqueued_at=record.get("enqueued_at"),
+            ttl_expires_at=record.get("ttl_expires_at"),
+            visible_at=record.get("visible_at") or record.get("enqueued_at"),
         )
 
     def _maintain_queue(self, recipient: str) -> None:

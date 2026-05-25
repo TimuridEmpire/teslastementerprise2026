@@ -4,7 +4,6 @@ Insert a test PM → Engineering message via the enterprise router (or legacy Mo
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -12,8 +11,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from agent_transport import AGENT_ENGINEERING, AGENT_PM, make_envelope, submit
-from enterprise_router_client import router_configured
+from agent_transport import AGENT_ENGINEERING, AGENT_PM, local_fallback_enabled, make_envelope, submit
 
 message = make_envelope(
     sender=AGENT_PM,
@@ -41,15 +39,9 @@ message = make_envelope(
 
 
 def main() -> None:
-    if router_configured():
-        prev = os.environ.get("ENTERPRISE_AGENT_NAME")
-        os.environ["ENTERPRISE_AGENT_NAME"] = AGENT_PM
-        try:
-            mid = submit(message)
-            print(f"Submitted via enterprise router: message_id={mid}")
-        finally:
-            if prev is not None:
-                os.environ["ENTERPRISE_AGENT_NAME"] = prev
+    if not local_fallback_enabled():
+        mid = submit(message)
+        print(f"Submitted via enterprise router: message_id={mid}")
         return
 
     from pymongo import MongoClient
@@ -58,8 +50,8 @@ def main() -> None:
     client = MongoClient(inter_agent_mongo_uri())
     db = client[inter_agent_mongo_db_name()]
     result = db.messages.insert_one(message)
-    print(f"Inserted legacy Mongo message _id={result.inserted_id}")
-    print("Engineering agent will pick this up on its next poll (legacy mode).")
+    print(f"Inserted legacy Mongo demo message _id={result.inserted_id}")
+    print("Engineering agent will pick this up only when ENTERPRISE_ROUTER_OFFLINE_DEMO=1.")
 
 
 if __name__ == "__main__":

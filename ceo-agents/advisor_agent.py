@@ -1,9 +1,9 @@
-import uuid
-import datetime
 from typing import Any, Dict
 
 from agent_logger import get_agent_logger, log_inter_agent_message
 from agent_transport import AGENT_CEO, make_envelope, submit
+from enterprise_router_client import EnterpriseRouterClient
+from message_schema import EnvelopeInput, Message
 
 from thread_safe_agent import ThreadSafeAgentMixin
 
@@ -27,7 +27,7 @@ class AdvisorAgent(ThreadSafeAgentMixin):
             f"{preview}..." if len(self.core_strategy) > 50 else self.core_strategy,
         )
 
-    def evaluate_ceo_decision(self, ceo_proposal_message):
+    def evaluate_ceo_decision(self, ceo_proposal_message: EnvelopeInput):
         """
         Takes a JSON message from the CEO, evaluates the payload against the 
         core strategy, and returns an advisory response message.
@@ -35,15 +35,19 @@ class AdvisorAgent(ThreadSafeAgentMixin):
         with self._agent_lock:
             return self._evaluate_ceo_decision_unlocked(ceo_proposal_message)
 
-    def _evaluate_ceo_decision_unlocked(self, ceo_proposal_message: Dict[str, Any]) -> Dict[str, Any]:
+    def _evaluate_ceo_decision_unlocked(self, ceo_proposal_message: EnvelopeInput) -> Dict[str, Any]:
         self.logger.info("Received proposal from CEO for strategic review.")
         
         # 1. Log the incoming message from the CEO
         log_inter_agent_message(self.logger, ceo_proposal_message, direction="RECEIVING")
         
-        # Extract the CEO's proposed payload to analyze
-        proposed_action = ceo_proposal_message.get("payload", {})
-        task_type = ceo_proposal_message.get("task_type", "UNKNOWN")
+        proposal = (
+            ceo_proposal_message
+            if isinstance(ceo_proposal_message, Message)
+            else Message.from_dict(ceo_proposal_message)
+        )
+        proposed_action = proposal.payload
+        task_type = proposal.task_type or "UNKNOWN"
         
         # 2. Perform the evaluation (Simulated AI Logic)
         # In a real app, you would pass the self.core_strategy and the proposed_action to an LLM prompt here.
@@ -57,7 +61,7 @@ class AdvisorAgent(ThreadSafeAgentMixin):
 
         advisory_response = make_envelope(
             sender=self.name,
-            recipient=ceo_proposal_message.get("sender", AGENT_CEO),
+            recipient=proposal.sender or AGENT_CEO,
             task_type="STRATEGY_REVIEW_RESULT",
             context={
                 "original_task": task_type,
@@ -69,7 +73,6 @@ class AdvisorAgent(ThreadSafeAgentMixin):
                 "recommended_action": "PROCEED" if is_aligned else "REVISE",
             },
             status="done",
-            message_id=f"adv-{uuid.uuid4().hex[:6]}",
         )
 
         log_inter_agent_message(self.logger, advisory_response, direction="SENDING")
@@ -90,3 +93,26 @@ class AdvisorAgent(ThreadSafeAgentMixin):
             "task_type": task or "UNKNOWN",
             "note": "Advisor acknowledged; no review handler for this task_type.",
         }
+
+    def process_one_router_message(
+        self,
+        *,
+        router_client: EnterpriseRouterClient | None = None,
+        recipient: str | None = None,
+    ) -> bool:
+        """Fetch, process, and ack/nack one Advisor message from the enterprise router."""
+        target = recipient or self.name
+        client = router_client or EnterpriseRouterClient.from_env(agent_name=target)
+        envelope = client.fetch_next(target)
+        if envelope is None:
+            return False
+
+        message_id = str(envelope.get("id", ""))
+        try:
+            self.on_bus_envelope(envelope)
+        except Exception as exc:
+            client.nack_message(message_id, target, reason=str(exc))
+            return True
+
+        client.ack_message(message_id, target)
+        return True

@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from message_schema import Message
+
+# Router storage and API use the shared enterprise envelope type.
+MessageEnvelope = Message
+
 
 @dataclass
 class RegistrationRequest:
@@ -40,22 +45,6 @@ class AgentRecord:
 
 
 @dataclass
-class MessageEnvelope:
-    id: str
-    timestamp: str
-    sender: str
-    recipient: str
-    task_type: str
-    context: dict[str, Any] = field(default_factory=dict)
-    payload: dict[str, Any] = field(default_factory=dict)
-    status: str = "pending"
-    error: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
 class RoutingHints:
     priority: int = 0
     requires_response: bool = False
@@ -66,8 +55,19 @@ class RoutingHints:
     def from_mapping(cls, raw: dict[str, Any] | None) -> RoutingHints:
         if not raw:
             return cls()
+        priority = raw.get("priority")
+        if priority is None:
+            urgency = str(raw.get("urgency") or "").strip().lower()
+            priority = {
+                "critical": 200,
+                "urgent": 175,
+                "high": 150,
+                "normal": 100,
+                "medium": 100,
+                "low": 50,
+            }.get(urgency, 0)
         return cls(
-            priority=int(raw.get("priority", 0) or 0),
+            priority=int(priority or 0),
             requires_response=bool(raw.get("requires_response", False)),
             ttl_seconds=raw.get("ttl_seconds"),
             dedupe_key=raw.get("dedupe_key"),
@@ -82,15 +82,38 @@ class QueuedMessage:
     envelope: MessageEnvelope
     priority: int = 0
     state: str = "queued"
-    visible_at: str = ""
-    lease_owner: str | None = None
+    attempts: int = 0
+    lease_until: str | None = None
+    blocked_reason: str = ""
+    ttl_seconds: int | None = None
+    dedupe_key: str | None = None
+    enqueued_at: str | None = None
+    ttl_expires_at: str | None = None
+    visible_at: str | None = None
+
+    def _delivery_state(self) -> str:
+        if self.state == "queued":
+            return "pending"
+        return self.state
 
     def to_dict(self) -> dict[str, Any]:
+        context = self.envelope.context or {}
         return {
             "queue_id": self.queue_id,
             "message_id": self.message_id,
             "recipient": self.recipient,
-            "priority": self.priority,
-            "state": self.state,
-            "message": self.envelope.to_dict(),
+            "envelope": self.envelope.to_dict(),
+            "computed_priority": self.priority,
+            "attempt_count": self.attempts,
+            "lease_until": self.lease_until,
+            "delivery_state": self._delivery_state(),
+            "blocked_reason": self.blocked_reason,
+            "enqueued_at": self.enqueued_at,
+            "ttl_expires_at": self.ttl_expires_at,
+            "visible_at": self.visible_at,
+            "provenance_source": context.get("provenance_source"),
+            "provenance_agent": context.get("provenance_agent"),
+            "provenance_trust_level": context.get("provenance_trust_level"),
+            "ttl_seconds": self.ttl_seconds,
+            "dedupe_key": self.dedupe_key,
         }
