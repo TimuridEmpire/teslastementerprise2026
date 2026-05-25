@@ -3,6 +3,7 @@ from agent_transport import AGENT_CEO, AGENT_SALES, ack, drain_mailbox, local_fa
 from message_schema import Message
 from marketing_tools import plan_campaign, save_campaign, generate_email, generate_image_prompt
 from pm_storage import storage
+from artifact_writer import render_campaign_brief_md, write_artifact
 
 # --- INTEGRATION: Import the enterprise logger utilities ---
 from agent_logger import get_agent_logger, log_inter_agent_message
@@ -140,3 +141,12 @@ class MarketingAgent:
                 features=features,
             )
             self.logger.info(f"MarketingAgent image prompt: {image_prompt.get('prompt', '')[:80]}")
+            # --- Item 2: write a campaign brief artifact (markdown) ---
+            brief_md = render_campaign_brief_md(product, campaign, email, image_prompt)
+            brief_artifact = write_artifact(
+                agent=self.name,
+                name="campaign_brief",
+                content=brief_md,
+                project_id=project_id,
+            )
+            self.logger.info(f"MarketingAgent wrote campaign brief artifact: {brief_artifact['path']}")
