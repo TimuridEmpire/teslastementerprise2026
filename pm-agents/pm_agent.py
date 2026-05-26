@@ -1,6 +1,7 @@
 import os
 from typing import Optional, Dict, Any
-from agent_transport import AGENT_MARKETING, ack, drain_mailbox, local_fallback_enabled, nack, receive, submit
+from agent_transport import AGENT_CEO, AGENT_HR, AGENT_MARKETING, ack, drain_mailbox, local_fallback_enabled, nack, receive, submit
+from agent_backlog import AgentBacklog
 from message_schema import Message
 from pm_tools import generate_features_llm, moscow_prioritize, create_project, add_request_to_project
 from pm_storage import storage
@@ -15,6 +16,7 @@ class PMAgent:
         
         # --- INTEGRATION: Replace basic logging with the centralized agent logger ---
         self.logger = get_agent_logger(self.name)
+        self.backlog = AgentBacklog()
 
     def run(self):
         if local_fallback_enabled():
@@ -30,6 +32,7 @@ class PMAgent:
         for m in msgs:
             # --- INTEGRATION: Log the received envelope cleanly ---
             log_inter_agent_message(self.logger, m, direction="RECEIVING")
+            self.backlog.record_interaction(m)
 
             try:
                 task = m.get('task_type')
@@ -37,6 +40,8 @@ class PMAgent:
                     self.handle_define_roadmap(m)
                 elif task == "REQUEST_FEATURES":
                     self.handle_feature_request(m)
+                elif task == "CEO_STRATEGY_DIRECTIVE":
+                    self.handle_ceo_strategy_directive(m)
                 else:
                     self.logger.warning(f"PMAgent: Unhandled task {task}")
                 if not local_fallback_enabled():
@@ -110,6 +115,7 @@ class PMAgent:
             payload={"product_name": product, "features": feature_list}
         )
         log_inter_agent_message(self.logger, campaign_msg, direction="SENDING")
+        self.backlog.record_interaction(campaign_msg)
         submit(campaign_msg)
 
         report_msg = Message.create(
@@ -125,6 +131,7 @@ class PMAgent:
             }
         )
         log_inter_agent_message(self.logger, report_msg, direction="SENDING")
+        self.backlog.record_interaction(report_msg)
         submit(report_msg)
 
     def handle_feature_request(self, msg):
@@ -162,4 +169,51 @@ class PMAgent:
             payload={"features": prioritized}
         )
         log_inter_agent_message(self.logger, response_msg, direction="SENDING")
+        self.backlog.record_interaction(response_msg)
         submit(response_msg)
+
+    def _derive_staffing_roles(self, strategy: str) -> list[str]:
+        base_roles = ["Router Observability Engineer", "Product Operations Analyst"]
+        text = strategy.lower()
+        if "marketing" in text or "campaign" in text:
+            base_roles.append("Campaign Operations Specialist")
+        if "retention" in text or "customer" in text:
+            base_roles.append("Customer Success Specialist")
+        return base_roles
+
+    def handle_ceo_strategy_directive(self, msg):
+        self.logger.info(f"PMAgent received CEO strategy directive: {msg.get('id')}")
+        payload = msg.get("payload", {})
+        strategy = str(payload.get("strategy") or "")
+        project_id = self._resolve_project_id(msg)
+        requested_roles = self._derive_staffing_roles(strategy)
+
+        hr_msg = Message.create(
+            sender=self.name,
+            recipient=AGENT_HR,
+            task_type="TALENT_REALLOCATION",
+            context={"project_id": project_id, "source_task_type": "CEO_STRATEGY_DIRECTIVE"},
+            payload={
+                "task": "Staff strategy execution based on CEO directive.",
+                "strategy": strategy,
+                "requested_roles": requested_roles,
+                "requested_by": "PM",
+            },
+        )
+        log_inter_agent_message(self.logger, hr_msg, direction="SENDING")
+        self.backlog.record_interaction(hr_msg)
+        submit(hr_msg)
+
+        ceo_report = Message.create(
+            sender=self.name,
+            recipient=AGENT_CEO,
+            task_type="PM_REPORT",
+            context={"project_id": project_id, "source_task_type": "CEO_STRATEGY_DIRECTIVE"},
+            payload={
+                "status": "staffing_routed_to_hr",
+                "requested_roles": requested_roles,
+            },
+        )
+        log_inter_agent_message(self.logger, ceo_report, direction="SENDING")
+        self.backlog.record_interaction(ceo_report)
+        submit(ceo_report)

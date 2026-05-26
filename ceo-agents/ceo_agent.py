@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import requests
 from agent_logger import get_agent_logger
+from agent_backlog import AgentBacklog
 from enterprise_router.agent_artifacts import write_agent_artifact
 from enterprise_router_client import EnterpriseRouterClient
 from message_schema import Message
@@ -34,6 +35,7 @@ class CeoAgent(ThreadSafeAgentMixin):
         super().__init__()
         self.name = name
         self.logger = get_agent_logger(self.name)
+        self.backlog = AgentBacklog()
         self.distribution_registry = distribution_registry
         self.legal_compliance_subagent = "Legal Compliance Agent"
         self.children_nearby_detected = False
@@ -244,6 +246,13 @@ class CeoAgent(ThreadSafeAgentMixin):
                 )
                 if artifact:
                     result["artifact"] = artifact
+                self._delegate_strategy_to_pm_unlocked(
+                    strategy_text=str(result.get("strategic_decision") or ""),
+                    cycle_context={
+                        "cycle_id": result["id"],
+                        "source_task_type": "CEO_REASONING_LOOP",
+                    },
+                )
                 return result
             except Exception as exc:
                 self._record_failure_unlocked()
@@ -391,6 +400,10 @@ class CeoAgent(ThreadSafeAgentMixin):
                     "departments": list(subordinate_agents),
                 },
                 source_task_type="CEO_STRATEGIC_CYCLE",
+            )
+            self._delegate_strategy_to_pm_unlocked(
+                strategy_text=str(decision),
+                cycle_context={"source_task_type": "CEO_STRATEGIC_CYCLE"},
             )
             return decision
 
@@ -559,6 +572,44 @@ class CeoAgent(ThreadSafeAgentMixin):
         except Exception as exc:
             # Artifact persistence is the hard requirement; router emit is additive.
             self.logger.warning("Unable to publish artifact event to router: %s", exc)
+
+    def _delegate_strategy_to_pm_unlocked(
+        self,
+        *,
+        strategy_text: str,
+        cycle_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Send CEO strategy to PM through enterprise_router so PM can derive
+        staffing/roadmap actions and route hiring asks to HR.
+        """
+        payload = {
+            "strategy": strategy_text,
+            "instruction": (
+                "Translate this CEO strategy into a plan, identify staffing needs, "
+                "and route hiring/reallocation requests to HR."
+            ),
+        }
+        context = dict(cycle_context or {})
+        context["strategy_origin"] = "CEO"
+        try:
+            envelope = Message.create(
+                sender=self.name,
+                recipient="PM",
+                task_type="CEO_STRATEGY_DIRECTIVE",
+                context=context,
+                payload=payload,
+            ).to_dict()
+            self.backlog.record_interaction(envelope)
+            self.send_router_envelope(
+                recipient="PM",
+                task_type="CEO_STRATEGY_DIRECTIVE",
+                payload=payload,
+                context=context,
+                urgency="high",
+            )
+        except Exception as exc:
+            self.logger.warning("Unable to deliver strategy directive to PM: %s", exc)
 
     def _metrics_snapshot_unlocked(self) -> Dict[str, Any]:
         tasks = self.metrics.get("tasks_per_agent")

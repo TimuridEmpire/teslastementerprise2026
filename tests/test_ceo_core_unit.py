@@ -118,6 +118,20 @@ class TestCeoCoreUnit(unittest.TestCase):
         writer.assert_called_once()
         self.assertEqual(writer.call_args.kwargs["body"], expected_strategy)
 
+    def test_oversee_company_delegates_strategy_to_pm(self):
+        ceo = CeoAgent(name="CEO")
+        expected_strategy = "Ship retention roadmap and staff delivery pods."
+
+        with mock.patch.object(ceo, "_make_strategic_decision_unlocked", return_value=expected_strategy):
+            with mock.patch.object(ceo, "_write_strategy_artifact_unlocked", return_value={"artifact_id": "art-1"}):
+                with mock.patch.object(ceo, "send_router_envelope", return_value="msg-1") as sender:
+                    ceo.oversee_company(["PM Agent"])
+
+        calls = [c.kwargs for c in sender.call_args_list if c.kwargs.get("recipient") == "PM"]
+        self.assertTrue(calls, "CEO should send at least one strategy directive to PM")
+        self.assertEqual(calls[0]["task_type"], "CEO_STRATEGY_DIRECTIVE")
+        self.assertIn("strategy", calls[0]["payload"])
+
 
 if __name__ == "__main__":
     unittest.main()
