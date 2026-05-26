@@ -1,0 +1,33 @@
+{
+  "must": [
+    {
+      "name": "AI-Powered Analytics Dashboard",
+      "impact": "high"
+    },
+    {
+      "name": "Multi-Tenant SSO Integration",
+      "impact": "high"
+    },
+    {
+      "name": "Automated Onboarding Flow",
+      "impact": "high"
+    }
+  ],
+  "should": [
+    {
+      "name": "Usage-Based Billing Module",
+      "impact": "medium"
+    },
+    {
+      "name": "In-App Help Center",
+      "impact": "medium"
+    }
+  ],
+  "could": [
+    {
+      "name": "Dark Mode UI",
+      "impact": "low"
+    }
+  ],
+  "wont": []
+}

@@ -1,6 +1,170 @@
 {
-  "projects": [],
-  "project_events": [],
-  "backlog_entries": [],
-  "campaigns": []
+  "projects": [
+    {
+      "_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "name": "Enterprise Router Console",
+      "goal": "Create a live operations console that shows agent routing, queue health, and workflow progress.",
+      "description": "Plan the first product roadmap for router-backed multi-agent operations.",
+      "status": "active",
+      "metadata": {
+        "product_name": "Enterprise Router Console",
+        "business_goal": "Create a live operations console that shows agent routing, queue health, and workflow progress.",
+        "description": "Plan the first product roadmap for router-backed multi-agent operations."
+      },
+      "created_at": "2026-05-25T23:17:53.974487+00:00",
+      "updated_at": "2026-05-25T23:18:08.281465+00:00"
+    }
+  ],
+  "project_events": [
+    {
+      "_id": "d18a5672-bb30-4948-82ff-f0a4ea48b66c",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "source": "PM",
+      "event_type": "roadmap_defined",
+      "message_id": "msg-0569a887",
+      "details": {
+        "product_name": "Enterprise Router Console",
+        "must_count": 3,
+        "should_count": 2
+      },
+      "created_at": "2026-05-25T23:17:53.989242+00:00"
+    },
+    {
+      "_id": "719daeb8-04a8-4b96-bff9-01dcdd89c277",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "source": "PM",
+      "event_type": "roadmap",
+      "message_id": "msg-0569a887",
+      "details": {
+        "type": "roadmap",
+        "message_id": "msg-0569a887",
+        "features": [
+          {
+            "name": "AI-Powered Analytics Dashboard",
+            "impact": "high"
+          },
+          {
+            "name": "Multi-Tenant SSO Integration",
+            "impact": "high"
+          },
+          {
+            "name": "Automated Onboarding Flow",
+            "impact": "high"
+          },
+          {
+            "name": "Usage-Based Billing Module",
+            "impact": "medium"
+          },
+          {
+            "name": "In-App Help Center",
+            "impact": "medium"
+          },
+          {
+            "name": "Dark Mode UI",
+            "impact": "low"
+          }
+        ]
+      },
+      "created_at": "2026-05-25T23:17:54.006002+00:00"
+    },
+    {
+      "_id": "646cb35e-2a59-41a7-96b9-56d3118501ee",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "source": "Marketing",
+      "event_type": "campaign_saved",
+      "message_id": "msg-550420a5",
+      "details": {
+        "product_name": "Enterprise Router Console",
+        "budget": 8000
+      },
+      "created_at": "2026-05-25T23:18:04.143797+00:00"
+    },
+    {
+      "_id": "1754cb89-6433-4864-b603-8c5f176e95cf",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "source": "Marketing",
+      "event_type": "pm_report_received",
+      "message_id": "msg-3fb85d07",
+      "details": {
+        "project_name": "Enterprise Router Console",
+        "must_count": 3,
+        "should_count": 2,
+        "status": "roadmap_defined"
+      },
+      "created_at": "2026-05-25T23:18:08.281465+00:00"
+    }
+  ],
+  "backlog_entries": [
+    {
+      "_id": "e5c4fd68-dd38-4db9-bcbc-0a5e21b1e627",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "bucket": "must",
+      "feature_name": "AI-Powered Analytics Dashboard",
+      "impact": "high",
+      "created_at": "2026-05-25T23:17:53.988354+00:00"
+    },
+    {
+      "_id": "8ba850a6-4e7b-45d5-9609-759a95a2c228",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "bucket": "must",
+      "feature_name": "Multi-Tenant SSO Integration",
+      "impact": "high",
+      "created_at": "2026-05-25T23:17:53.988354+00:00"
+    },
+    {
+      "_id": "f8282c6b-0082-4d33-987e-8c7b44ef7fda",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "bucket": "must",
+      "feature_name": "Automated Onboarding Flow",
+      "impact": "high",
+      "created_at": "2026-05-25T23:17:53.988354+00:00"
+    },
+    {
+      "_id": "f817ae38-be0a-4a02-aec3-8cf03d187cc3",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "bucket": "should",
+      "feature_name": "Usage-Based Billing Module",
+      "impact": "medium",
+      "created_at": "2026-05-25T23:17:53.988354+00:00"
+    },
+    {
+      "_id": "32dd2fbf-8748-4018-9d74-90bff60de80f",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "bucket": "should",
+      "feature_name": "In-App Help Center",
+      "impact": "medium",
+      "created_at": "2026-05-25T23:17:53.988354+00:00"
+    },
+    {
+      "_id": "1c2114a9-ae69-4a75-b46c-066c401daa90",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "bucket": "could",
+      "feature_name": "Dark Mode UI",
+      "impact": "low",
+      "created_at": "2026-05-25T23:17:53.988354+00:00"
+    }
+  ],
+  "campaigns": [
+    {
+      "_id": "871ebafc-7edc-4602-bf85-73067c1c2f88",
+      "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9",
+      "campaign": {
+        "product": "Enterprise Router Console",
+        "features": [
+          "AI-Powered Analytics Dashboard",
+          "Multi-Tenant SSO Integration",
+          "Automated Onboarding Flow",
+          "Usage-Based Billing Module",
+          "In-App Help Center"
+        ],
+        "tagline": "Unlock the power of Enterprise Router Console",
+        "channel": "Email + Social Media",
+        "budget": 8000,
+        "expected_leads": 150,
+        "timeline_weeks": 6,
+        "project_id": "11b13e66-6c77-4fb5-bb30-9a9b5da300c9"
+      },
+      "created_at": "2026-05-25T23:18:04.135248+00:00"
+    }
+  ]
 }
