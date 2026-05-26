@@ -9,16 +9,31 @@ import time
 import shutil
 import importlib.util
 from pathlib import Path
-from crewai import Agent, Crew, Task # type: ignore # TODO: see if using crewai or mistral for consistency (also it's not going to run without importing it)
-from crewai.llm import LLM # type: ignore
-from crewai_tools import FileReadTool # type: ignore
-import git # type: ignore
+from crewai import Agent, Crew, Task
+from crewai.llm import LLM
+from crewai_tools import FileReadTool
+import git
 from pymongo import MongoClient
+
+try:
+    from agent_transport import ack, delegate, nack, receive
+except ImportError:
+    ack = delegate = nack = receive = None
+
+try:
+    from enterprise_router.agent_artifacts import write_agent_artifact
+except ImportError:
+    write_agent_artifact = None
+
+try:
+    from message_schema import Message
+except ImportError:
+    Message = None
 
 # Model note: llama3.1 is stable but tool use is unreliable. llama3.2 has better tool-calling
 # support — switch the model string below if you want to try it. llama3 (base) cannot use tools.
 # Local LLM (Ollama) — override with OLLAMA_MODEL env var to switch models without editing code.
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "ollama/llama3.1:latest")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "ollama/deepseek-coder-v2:16b")
 llm = LLM(
     model=OLLAMA_MODEL,
     base_url="http://localhost:11434"
@@ -26,9 +41,9 @@ llm = LLM(
 
 # GitHub repo for generated output — set GITHUB_REPO_URL to a remote URL to enable push.
 # e.g. $env:GITHUB_REPO_URL = "https://github.com/your-org/generated-output.git"
-# Leave unset to skip pushing (files are still written locally under OUTPUT_DIR).
+# Leave unset to push to a repo i made through a path that works on my computer
 GITHUB_REPO_URL = os.environ.get("GITHUB_REPO_URL", "")
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "generated_output")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "C:\\repos\\eng_agent_testing")
 
 def init_output_repo():
     """Ensure OUTPUT_DIR exists as a git repo, cloning from GITHUB_REPO_URL if set."""
@@ -55,17 +70,29 @@ def commit_and_push(repo, message="chore: agent-generated code"):
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-def make_response(sender, recipient, task_type, payload, status="done", error=None):
+def make_response(sender, recipient, task_type, payload, context=None, status="done", error=None):
+    if Message is not None:
+        envelope = Message.create(
+            sender=sender,
+            recipient=recipient,
+            task_type=task_type,
+            context=context or {},
+            payload=payload,
+        ).to_dict()
+        envelope["status"] = status
+        envelope["error"] = error
+        return envelope
+
     return {
-        "id": f"msg-{uuid.uuid4().hex[:8]}",
+        "id": str(uuid.uuid4()),
         "timestamp": now(),
         "sender": sender,
         "recipient": recipient,
         "task_type": task_type,
-        "context": {},
-        "payload": payload if isinstance(payload, dict) else {"result": payload},
+        "context": context or {},
+        "payload": payload,
         "status": status,
-        "error": error or "",
+        "error": error
     }
 
 # ---------------------------------------------------------------------------
@@ -102,11 +129,6 @@ class RecoverableError(Exception):
     the message and wait for HR to replenish budgets."""
     pass
 
-#TODO: Clarify internal engineering agent tokens vs the universal ceo tokens and make sure the naming makes it clear which is which. 
-# The engineering agent tokens are meant to be a proxy for how much work the engineering agents can do before needing to ask HR for more, 
-# while the CEO tokens are meant to be a proxy for how much work the CEO can do before needing to ask the board for more. '
-# Right now the engineering agent tokens are just called "token budgets" but maybe they should be called "engineering agent token budgets"
-#  or something to make it more clear that they are separate from the CEO tokens.
 class TokenBudget:
     def __init__(self):
         self.budgets = dict(DEFAULT_BUDGETS)
@@ -141,38 +163,31 @@ class TokenBudget:
         )
 
     def _request_tokens_from_hr(self, db):
-        import sys
-        from pathlib import Path
-
-        _root = Path(__file__).resolve().parents[1]
-        if str(_root) not in sys.path:
-            sys.path.insert(0, str(_root))
-
-        from agent_transport import AGENT_ENGINEERING, AGENT_HR, local_fallback_enabled, make_envelope, submit
-
-        request = make_envelope(
-            sender=AGENT_ENGINEERING,
-            recipient=AGENT_HR,
-            task_type="TOKEN_REQUEST",
-            payload={
+        if db is None:
+            print("[TokenBudget] Token request skipped: no offline Mongo database is configured.")
+            return
+        request = {
+            "id": str(uuid.uuid4()),
+            "timestamp": now(),
+            "sender": "ENG",
+            "recipient": "HR",
+            "task_type": "TOKEN_REQUEST",
+            "context": "",
+            "payload": {
                 "reason": "All engineering agents have exhausted their token budgets mid-task.",
                 "requested_budgets": DEFAULT_BUDGETS,
             },
-        )
-        if local_fallback_enabled() and db is not None:
-            db.messages.insert_one(request)
-        else:
-            submit(request)
+            "status": "pending",
+            "error": ""
+        }
+        db.messages.insert_one(request)
+        request.pop("_id", None)
         print(f"[TokenBudget] Token request sent to HR agent: {request['id']}")
 
 
 # ---------------------------------------------------------------------------
 
 class FullSystem:
-    # TODO: This class is a work in progress and not fully integrated yet. 
-    # The idea is to have a single object that encapsulates the entire system state and logic, including the agents, token budgets, and helper functions for contract validation and plan generation. 
-    # This way we can avoid using global variables and have a cleaner interface for the main execution flow.
-    # Make sure to have a description of this class and its purpose in the docstring once it's more fully fleshed out.
     def __init__(self, db=None):
         self.llm = llm
         self.db = db          # needed for HR token requests
@@ -193,7 +208,7 @@ class FullSystem:
 
         self._agent_for = _agent_for
         
-        #TODO: IDK how much of an issue this will be in the long run but the agent's memories are causing them to sometimes mess up their outputs.
+        #IDK how much of an issue this will be in the long run but the agent's memories are causing them to sometimes mess up their outputs.
         # setting memory to false is supposed to fix this but doesn't really work, i've been using "reset_memories(command_type="all")" after tasks which seems to have maybe helped?
         # Lead Developer (Planner + Reviewer)
         self.lead = Agent(
@@ -242,255 +257,10 @@ class FullSystem:
         This prevents generated code from passing weak tests while missing
         critical API methods.
         """
-        spec_l = spec.lower()
-        contracts = {}
-
-        # Streamlit apps have UI-based game logic — skip class-level contract checks.
-        if "streamlit" in spec_l:
-            return contracts
-
-        if "number guessing" in spec_l or "guessing game" in spec_l:
-            methods = ["make_guess"]
-            if "start new game" in spec_l or "start_game" in spec_l or "start a new game" in spec_l:
-                methods.append("start_new_game")
-            contracts["number_guessing_game.py"] = {
-                "class": "NumberGuessingGame",
-                "methods": methods,
-            }
-
-        return contracts
-
-    def _required_source_files(self, spec):
-        """Return source filenames that must exist for known feature types."""
-        spec_l = spec.lower()
-        required = []
-        # Streamlit apps don't need a standalone game module — let LLM decide structure.
-        if "streamlit" not in spec_l and ("number guessing" in spec_l or "guessing game" in spec_l):
-            required.append("number_guessing_game.py")
-        return required
+        return {}
 
     def _is_streamlit_spec(self, spec):
         return "streamlit" in spec.lower()
-
-    def _is_number_guessing_spec(self, spec):
-        """Only true for pure Python class-based number guessing games, not Streamlit apps."""
-        spec_l = spec.lower()
-        if "streamlit" in spec_l:
-            return False
-        return "number guessing" in spec_l or "guessing game" in spec_l
-
-    def _is_streamlit_number_guessing_spec(self, spec):
-        spec_l = spec.lower()
-        return "streamlit" in spec_l and ("number guessing" in spec_l or "guessing game" in spec_l)
-
-    def _number_guessing_plan(self):
-        return """1. Create number_guessing_game.py with a NumberGuessingGame class.
-2. Implement __init__(max_attempts=5) to initialize max_attempts, attempts_remaining, and a secret number.
-3. Implement start_new_game() to reset attempts and generate a new random number from 1 to 100.
-4. Implement make_guess(guess) so guesses below the secret return 'too low', above return 'too high', equal return 'correct', and invalid input returns an invalid-input message.
-5. Do not use input(), print-driven gameplay loops, or embedded tests inside the source module.
-6. Create tests.py with deterministic unittest coverage for class construction, start_new_game, and make_guess behavior.
-7. Create a main.py that imports NumberGuessingGame and launches a Streamlit app to play the game with a simple UI.
-"""
-
-    def _number_guessing_tests(self):
-        return """import unittest
-from number_guessing_game import NumberGuessingGame
-
-
-class TestNumberGuessingGame(unittest.TestCase):
-    def setUp(self):
-        self.game = NumberGuessingGame(max_attempts=5)
-        # Force deterministic state for behavior tests.
-        if hasattr(self.game, 'number_to_guess'):
-            self.game.number_to_guess = 42
-        elif hasattr(self.game, '_secret_number'):
-            self.game._secret_number = 42
-        elif hasattr(self.game, 'secret_number'):
-            self.game.secret_number = 42
-
-    def _set_secret(self, value):
-        if hasattr(self.game, 'number_to_guess'):
-            self.game.number_to_guess = value
-        elif hasattr(self.game, '_secret_number'):
-            self.game._secret_number = value
-        elif hasattr(self.game, 'secret_number'):
-            self.game.secret_number = value
-        else:
-            self.fail('Game has no recognized secret number attribute')
-
-    def test_required_methods_exist(self):
-        self.assertTrue(hasattr(self.game, 'start_new_game'))
-        self.assertTrue(hasattr(self.game, 'make_guess'))
-
-    def test_start_new_game_sets_number_in_range(self):
-        self.game.start_new_game()
-        secret = getattr(
-            self.game,
-            'number_to_guess',
-            getattr(self.game, '_secret_number', getattr(self.game, 'secret_number', None)),
-        )
-        self.assertIsInstance(secret, int)
-        self.assertGreaterEqual(secret, 1)
-        self.assertLessEqual(secret, 100)
-
-    def test_make_guess_too_low(self):
-        self._set_secret(42)
-        result = str(self.game.make_guess(10)).lower()
-        self.assertIn('low', result)
-
-    def test_make_guess_too_high(self):
-        self._set_secret(42)
-        result = str(self.game.make_guess(90)).lower()
-        self.assertIn('high', result)
-
-    def test_make_guess_correct(self):
-        self._set_secret(42)
-        result = str(self.game.make_guess(42)).lower()
-        self.assertIn('correct', result)
-
-    def test_make_guess_invalid_input(self):
-        result = str(self.game.make_guess('abc')).lower()
-        self.assertTrue('invalid' in result or 'enter' in result)
-
-
-if __name__ == '__main__':
-    unittest.main()
-"""
-
-    def _streamlit_number_guessing_plan(self):
-        return """1. Create number_guessing_game.py with a NumberGuessingGame class that contains all game logic.
-2. Implement __init__(max_attempts=5), start_new_game(), and make_guess(guess) in the game logic class.
-3. Create main.py as a Streamlit UI entry point (launch with: streamlit run main.py).
-4. In main.py, store game state in st.session_state and do not use loops to repeatedly create widgets.
-5. Ensure every Streamlit widget has a unique key (especially st.number_input and st.button).
-6. Create tests.py with deterministic unittest tests for number_guessing_game.py only.
-7. Keep UI and game logic separated; tests should not import streamlit.
-"""
-
-    def _streamlit_number_guessing_game_logic(self):
-        return """import random
-
-
-class NumberGuessingGame:
-    def __init__(self, max_attempts=5):
-        self.max_attempts = max_attempts
-        self.attempts_remaining = max_attempts
-        self.secret_number = random.randint(1, 100)
-        self.is_over = False
-
-    def start_new_game(self):
-        self.attempts_remaining = self.max_attempts
-        self.secret_number = random.randint(1, 100)
-        self.is_over = False
-
-    def make_guess(self, guess):
-        if self.is_over:
-            return "Game over. Start a new game to play again."
-
-        try:
-            guess = int(guess)
-        except (TypeError, ValueError):
-            return "Invalid input. Please enter an integer from 1 to 100."
-
-        if guess < 1 or guess > 100:
-            return "Invalid input. Please enter an integer from 1 to 100."
-
-        if guess == self.secret_number:
-            self.is_over = True
-            return "Correct! You guessed the number."
-
-        self.attempts_remaining -= 1
-        if self.attempts_remaining <= 0:
-            self.is_over = True
-            return f"You lose. The number was {self.secret_number}."
-
-        if guess < self.secret_number:
-            return f"Too low. Attempts remaining: {self.attempts_remaining}"
-        return f"Too high. Attempts remaining: {self.attempts_remaining}"
-"""
-
-    def _streamlit_number_guessing_main(self):
-        return """import streamlit as st
-from number_guessing_game import NumberGuessingGame
-
-
-def _init_state():
-    if "game" not in st.session_state:
-        st.session_state.game = NumberGuessingGame(max_attempts=5)
-    if "feedback" not in st.session_state:
-        st.session_state.feedback = "Make a guess to begin."
-
-
-def main():
-    st.set_page_config(page_title="Number Guessing Game", page_icon="🎯")
-    st.title("🎯 Number Guessing Game")
-    st.write("Guess a number between 1 and 100")
-
-    _init_state()
-    game = st.session_state.game
-
-    st.caption(f"Attempts remaining: {game.attempts_remaining}")
-
-    guess = st.number_input(
-        "Enter your guess",
-        min_value=1,
-        max_value=100,
-        step=1,
-        key="guess_input",
-    )
-
-    if st.button("Submit Guess", key="submit_guess"):
-        st.session_state.feedback = game.make_guess(guess)
-
-    st.info(st.session_state.feedback)
-
-    if st.button("Start New Game", key="new_game_button"):
-        game.start_new_game()
-        st.session_state.feedback = "New game started. Make a guess!"
-
-
-if __name__ == "__main__":
-    main()
-"""
-
-    def _streamlit_number_guessing_tests(self):
-        return """import unittest
-from number_guessing_game import NumberGuessingGame
-
-
-class TestNumberGuessingGame(unittest.TestCase):
-    def setUp(self):
-        self.game = NumberGuessingGame(max_attempts=3)
-        self.game.secret_number = 42
-
-    def test_valid_low_guess(self):
-        result = self.game.make_guess(10).lower()
-        self.assertIn("low", result)
-
-    def test_valid_high_guess(self):
-        result = self.game.make_guess(80).lower()
-        self.assertIn("high", result)
-
-    def test_correct_guess(self):
-        result = self.game.make_guess(42).lower()
-        self.assertIn("correct", result)
-
-    def test_invalid_guess(self):
-        result = self.game.make_guess("abc").lower()
-        self.assertIn("invalid", result)
-
-    def test_game_over_when_attempts_exhausted(self):
-        self.game.make_guess(1)
-        self.game.make_guess(2)
-        result = self.game.make_guess(3).lower()
-        self.assertIn("lose", result)
-        self.assertTrue(self.game.is_over)
-
-
-if __name__ == '__main__':
-    unittest.main()
-"""
 
     def _clean_output_dir(self):
         output_path = Path(OUTPUT_DIR)
@@ -557,32 +327,6 @@ if __name__ == '__main__':
                 if method not in method_names:
                     return False, f"Missing required method {contract['class']}.{method} in {file_name}"
 
-            if self._is_number_guessing_spec(spec):
-                init_node = method_nodes.get("__init__")
-                if init_node is None:
-                    return False, f"Missing required constructor {contract['class']}.__init__ in {file_name}"
-                init_args = [arg.arg for arg in init_node.args.args]
-                if "max_attempts" not in init_args:
-                    return False, f"Constructor {contract['class']}.__init__ must accept max_attempts in {file_name}"
-
-        # Additional safety checks for number guessing tasks.
-        if self._is_number_guessing_spec(spec):
-            game_file = Path(OUTPUT_DIR) / "number_guessing_game.py"
-            if game_file.exists():
-                content = game_file.read_text(encoding="utf-8")
-                if "input(" in content:
-                    return False, "Forbidden interactive input() found in number_guessing_game.py"
-                if "unittest" in content or "TestCase" in content:
-                    return False, "number_guessing_game.py must not contain test code or unittest imports"
-
-                # Reject top-level side effects like immediate gameplay execution.
-                tree = ast.parse(content)
-                for node in tree.body:
-                    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
-                        return False, "Top-level function/class call found in number_guessing_game.py"
-                    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-                        return False, "Top-level assignment-from-call found in number_guessing_game.py"
-
         return True, "Contract checks passed."
 
     #Creates a plan based off which the rest of the code is written
@@ -590,11 +334,6 @@ if __name__ == '__main__':
     #The plan tends to have a lot of formatting either avoid storing it as a string/text file or copy over some of the 'STRICT RULES' form the 
     #coding prompts to reduce the fancy formatting
     def create_plan(self, spec):
-        if self._is_streamlit_number_guessing_spec(spec):
-            return self._streamlit_number_guessing_plan()
-
-        if self._is_number_guessing_spec(spec):
-            return self._number_guessing_plan()
 
         chosen_lead = self._agent_for("lead", "plan")
         streamlit_hint = ""
@@ -634,12 +373,7 @@ if __name__ == '__main__':
     #none of these files are actually created until the code is generated in generate_code, this function just determines what files need to be created and returns a list of the file names with extensions
     #IMPORTANT: the testing file is always named "tests" and is the last one in the outputted list. This is used throughout the rest of the code
     def create_necessary_files(self, spec, plan):
-        if self._is_streamlit_number_guessing_spec(spec):
-            return ["number_guessing_game.py", "main.py", "tests.py"]
 
-        # For pure Python class-based number guessing, force a deterministic file set.
-        if self._is_number_guessing_spec(spec):
-            return ["number_guessing_game.py", "tests.py"]
 
         chosen_lead = self._agent_for("lead", "file_list")
         streamlit_file_hint = ""
@@ -682,7 +416,7 @@ if __name__ == '__main__':
         crew_files.reset_memories(command_type="all")
 
         # Enforce mandatory source files so contract checks remain satisfiable.
-        required_sources = self._required_source_files(spec)
+        required_sources = []
         # For Streamlit apps, always include main.py as a source file.
         if self._is_streamlit_spec(spec) and "main.py" not in required_sources:
             required_sources.append("main.py")
@@ -699,21 +433,18 @@ if __name__ == '__main__':
 
         return files
 
+    def clean_code(self, code):
+        """Basic code cleaning to reduce formatting issues. This can be expanded as needed."""
+        # Remove markdown code fences if present
+        if "```Python" in code or "```python" in code:
+            code = code.replace("```Python", "").replace("```python", "")
+        if "```" in code:
+            code = code.replace("```", "")
+        return code.strip()
+
     #function to generate code based on the spec and the plan created by the lead, organized into the files determined by create_necessary_files
     #the code is generated one file at a time, and after each file is generated it is written to a file (the file is created as it is written to)
     def generate_code(self, spec, plan, file, file_list=None):
-        if self._is_streamlit_number_guessing_spec(spec):
-            deterministic = None
-            if file == "number_guessing_game.py":
-                deterministic = self._streamlit_number_guessing_game_logic()
-            elif file == "main.py":
-                deterministic = self._streamlit_number_guessing_main()
-            if deterministic is not None:
-                out_path = Path(OUTPUT_DIR) / file
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(out_path, "w", encoding="utf-8") as f:
-                    f.write(deterministic)
-                return deterministic
 
         chosen_dev = self._agent_for("dev", "generate")
         streamlit_hint = ""
@@ -761,7 +492,7 @@ if __name__ == '__main__':
             agent=chosen_dev
         )
         crew = Crew(agents=[chosen_dev], tasks=[task])
-        result = crew.kickoff()
+        result = self.clean_code(str(crew.kickoff()))
         crew.reset_memories(command_type="all")
         # Write generated file into OUTPUT_DIR so it stays separate from the agent's own code
         out_path = Path(OUTPUT_DIR) / file
@@ -775,21 +506,6 @@ if __name__ == '__main__':
         """Dedicated test-generation prompt — produces more reliable test code than the
         generic generate_code prompt because it explicitly tells the agent what the source
         files are and what they need to test."""
-        if self._is_streamlit_number_guessing_spec(spec):
-            result = self._streamlit_number_guessing_tests()
-            out_path = Path(OUTPUT_DIR) / file
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(result)
-            return result
-
-        if self._is_number_guessing_spec(spec):
-            result = self._number_guessing_tests()
-            out_path = Path(OUTPUT_DIR) / file
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(result)
-            return result
 
         chosen_tester = self._agent_for("tester", "test_gen")
         source_listing = "\n".join(source_files)
@@ -843,7 +559,7 @@ if __name__ == '__main__':
             agent=chosen_tester
         )
         crew = Crew(agents=[chosen_tester], tasks=[task])
-        result = str(crew.kickoff())
+        result = self.clean_code(str(crew.kickoff()))
         crew.reset_memories(command_type="all")
         out_path = Path(OUTPUT_DIR) / file
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -851,100 +567,6 @@ if __name__ == '__main__':
             f.write(result)
         return result
 
-    def run_number_guessing_behavior_checks(self):
-        """Directly validate core runtime behavior for the number guessing benchmark.
-        This gives the agent precise failures before the broader unittest run."""
-        module_path = Path(OUTPUT_DIR) / "number_guessing_game.py"
-        if not module_path.exists():
-            return False, "number_guessing_game.py was not generated"
-
-        try:
-            spec = importlib.util.spec_from_file_location("generated_number_guessing_game", module_path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        except Exception as e:
-            return False, f"Failed to import generated module: {e}"
-
-        game_cls = getattr(module, "NumberGuessingGame", None)
-        if game_cls is None:
-            return False, "Generated module does not define NumberGuessingGame"
-
-        try:
-            game = game_cls(max_attempts=5)
-        except Exception as e:
-            return False, f"Could not instantiate NumberGuessingGame(max_attempts=5): {e}"
-
-        if not hasattr(game, "start_new_game") or not hasattr(game, "make_guess"):
-            return False, "Generated game is missing required public methods"
-
-        try:
-            game.start_new_game()
-        except Exception as e:
-            return False, f"start_new_game() failed: {e}"
-
-        secret_attr = None
-        for candidate in ("number_to_guess", "_secret_number", "secret_number", "secret"):
-            if hasattr(game, candidate):
-                secret_attr = candidate
-                break
-        if secret_attr is None:
-            return False, "Game has no recognized secret number attribute after start_new_game()"
-
-        secret = getattr(game, secret_attr)
-        if not isinstance(secret, int) or not (1 <= secret <= 100):
-            return False, "Secret number is not a valid integer in range 1..100"
-
-        setattr(game, secret_attr, 42)
-        low = str(game.make_guess(10)).lower()
-        high = str(game.make_guess(90)).lower()
-        correct = str(game.make_guess(42)).lower()
-        invalid = str(game.make_guess("abc")).lower()
-
-        if "low" not in low:
-            return False, f"make_guess(10) should indicate too low, got: {low}"
-        if "high" not in high:
-            return False, f"make_guess(90) should indicate too high, got: {high}"
-        if "correct" not in correct:
-            return False, f"make_guess(42) should indicate correct, got: {correct}"
-        if "invalid" not in invalid and "enter" not in invalid:
-            return False, f"make_guess('abc') should reject invalid input, got: {invalid}"
-
-        return True, "Number guessing behavior checks passed."
-
-    def run_streamlit_ui_checks(self):
-        """Validate basic Streamlit UI quality in generated main.py."""
-        main_path = Path(OUTPUT_DIR) / "main.py"
-        if not main_path.exists():
-            return False, "main.py was not generated"
-
-        content = main_path.read_text(encoding="utf-8")
-        if "import streamlit as st" not in content and "from streamlit" not in content:
-            return False, "main.py does not import streamlit"
-        if "input(" in content:
-            return False, "main.py uses input(), which is invalid for Streamlit UI"
-
-        try:
-            tree = ast.parse(content)
-        except Exception as e:
-            return False, f"Streamlit main.py parse error: {e}"
-
-        number_inputs = 0
-        number_input_with_key = 0
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                if isinstance(node.func.value, ast.Name) and node.func.value.id == "st":
-                    if node.func.attr == "number_input":
-                        number_inputs += 1
-                        for kw in node.keywords:
-                            if kw.arg == "key":
-                                number_input_with_key += 1
-
-        if number_inputs == 0:
-            return False, "main.py does not define any st.number_input widget"
-        if number_input_with_key < number_inputs:
-            return False, "Every st.number_input must include a unique key=..."
-
-        return True, "Streamlit UI checks passed."
 
     def run_tests(self, testing_file):
         """Run a test file and return (passed: bool, detail: str).
@@ -1022,16 +644,7 @@ if __name__ == '__main__':
         if not contract_ok:
             success_status, error_message = False, contract_message
         else:
-            if self._is_streamlit_number_guessing_spec(spec):
-                success_status, error_message = self.run_streamlit_ui_checks()
-                if success_status:
-                    success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
-            elif self._is_number_guessing_spec(spec):
-                success_status, error_message = self.run_number_guessing_behavior_checks()
-                if success_status:
-                    success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
-            else:
-                success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
+            success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
         if success_status:
             commit_and_push(repo, f"feat: initial generated code ({testing_file} passing)")
             return {"status": "success", "iterations": iteration}
@@ -1067,11 +680,6 @@ if __name__ == '__main__':
 
             # Step 2: Dev re-generates each non-test file using the feedback
             for file in files[:-1]:
-                if self._is_streamlit_number_guessing_spec(spec):
-                    # Keep this benchmark deterministic and stable.
-                    self.generate_code(spec, plan, file, file_list=files)
-                    continue
-
                 chosen_dev = self._agent_for("dev", "fix")
                 fix_task = Task(
                     description=f"""
@@ -1112,16 +720,7 @@ if __name__ == '__main__':
             if not contract_ok:
                 success_status, error_message = False, contract_message
             else:
-                if self._is_streamlit_number_guessing_spec(spec):
-                    success_status, error_message = self.run_streamlit_ui_checks()
-                    if success_status:
-                        success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
-                elif self._is_number_guessing_spec(spec):
-                    success_status, error_message = self.run_number_guessing_behavior_checks()
-                    if success_status:
-                        success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
-                else:
-                    success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
+                success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
             if success_status:
                 commit_and_push(repo, f"fix: iteration {iteration} — tests now passing")
                 return {"status": "success", "iterations": iteration}
@@ -1130,160 +729,282 @@ if __name__ == '__main__':
 
 
 class EngineeringAgent:
-    def __init__(self, db):
+    def __init__(self, db=None):
         self.name = "Engineering"
         self.db = db
 
+    def _build_spec(self, task_type, payload):
+        if task_type == "generate_code":
+            return payload["spec"]
+
+        if task_type == "IMPLEMENT_FEATURE":
+            criteria = "\n".join(f"- {c}" for c in payload.get("acceptance_criteria", []))
+            return (
+                f"Feature: {payload.get('feature_name', 'Unnamed feature')}\n"
+                f"Feature ID: {payload.get('feature_id', '')}\n"
+                f"Description: {payload.get('description', '')}\n"
+                f"Acceptance criteria:\n{criteria}"
+            )
+
+        raise ValueError(f"Unknown task_type: {task_type}")
+
+    def _generated_files(self):
+        output_path = Path(OUTPUT_DIR)
+        if not output_path.exists():
+            return []
+        return sorted(
+            str(path.relative_to(output_path)).replace("\\", "/")
+            for path in output_path.rglob("*")
+            if path.is_file() and ".git" not in path.parts
+        )
+
+    def _artifact_body(self, spec, result=None, error=None):
+        generated_files = self._generated_files()
+        files_section = "\n".join(f"- `{file}`" for file in generated_files) or "- No files generated."
+        test_status = "not run"
+        if result:
+            test_status = "passed" if result.get("status") == "success" else "failed"
+        review_notes = (
+            f"Review and iteration completed in {result.get('iterations', 0)} iteration(s)."
+            if result else "Processing stopped before review iteration completed."
+        )
+        error_section = f"\n\n## Error\n\n{error}" if error else ""
+
+        return (
+            "## Engineering Request\n\n"
+            f"{spec}\n\n"
+            "## Generated Files\n\n"
+            f"{files_section}\n\n"
+            "## Test Status\n\n"
+            f"{test_status}\n\n"
+            "## Review Notes\n\n"
+            f"{review_notes}"
+            f"{error_section}\n"
+        )
+
+    def _write_artifact(self, message, spec, result=None, error=None):
+        if write_agent_artifact is None:
+            if self.db is None:
+                raise RuntimeError(
+                    "Router artifact writer is unavailable. Ensure enterprise_router is on PYTHONPATH."
+                )
+            return None
+
+        artifact = write_agent_artifact(
+            self.name,
+            title="Engineering Feature Implementation",
+            artifact_type="engineering",
+            body=self._artifact_body(spec, result=result, error=error),
+            metadata={
+                "run_id": message.get("context", {}).get("run_id"),
+                "project_id": message.get("context", {}).get("project_id"),
+                "status": "error" if error else result.get("status", "unknown"),
+                "generated_files": self._generated_files(),
+            },
+            source_message_id=str(message.get("id", "")),
+            source_task_type=str(message.get("task_type", "")),
+        )
+        return artifact.get("artifact_id") if isinstance(artifact, dict) else None
+
+    def _response_context(self, message):
+        context = dict(message.get("context") or {})
+        context["source_message_id"] = str(message.get("id", ""))
+        context["source_task_type"] = str(message.get("task_type", ""))
+        return context
+
     def handle_message(self, message):
         task_type = message["task_type"]
-        payload = message["payload"]
+        payload = message.get("payload", {})
+        requester = message.get("sender", "PM")
+        context = self._response_context(message)
 
         try:
-            # Legacy format: task_type = "generate_code" with payload.spec
-            if task_type == "generate_code":
-                spec = payload["spec"]
-
-            # PM agent format: task_type = "IMPLEMENT_FEATURE" with acceptance_criteria etc.
-            elif task_type == "IMPLEMENT_FEATURE":
-                # Build a spec string from the PM message fields
-                criteria = "\n".join(f"- {c}" for c in payload.get("acceptance_criteria", []))
-                spec = (
-                    f"Feature: {payload.get('feature_name', 'Unnamed feature')}\n"
-                    f"Feature ID: {payload.get('feature_id', '')}\n"
-                    f"Acceptance criteria:\n{criteria}"
-                )
-
-            else:
-                return make_response(
-                    sender=self.name,
-                    recipient=message["sender"],
-                    task_type=task_type,
-                    payload={},
-                    status="error",
-                    error=f"Unknown task_type: {task_type}"
-                )
-
+            spec = self._build_spec(task_type, payload)
             system = FullSystem(db=self.db)
             max_iterations = int(os.environ.get("MAX_ITERATIONS", "10"))
             result = system.review_and_iterate(spec, max_iterations)
+            artifact_id = self._write_artifact(message, spec, result=result)
+            is_success = result.get("status") == "success"
+            response_payload = {
+                "status": "done" if is_success else "error",
+                "summary": (
+                    "Feature implementation completed."
+                    if is_success else "Feature implementation did not pass engineering validation."
+                ),
+                "artifact_id": artifact_id,
+                "details": result,
+                "generated_files": self._generated_files(),
+                "next_actions": [
+                    "Requester reviews the engineering artifact.",
+                    "Run the generated project from the configured OUTPUT_DIR.",
+                ],
+            }
             return make_response(
                 sender=self.name,
-                recipient=message["sender"],
-                task_type=task_type,
-                payload=result
+                recipient=requester,
+                task_type="FEATURE_RESPONSE",
+                context=context,
+                payload=response_payload,
+                status=response_payload["status"]
             )
 
         except Exception as e:
+            spec = ""
+            try:
+                spec = self._build_spec(task_type, payload)
+            except Exception:
+                pass
+            artifact_id = self._write_artifact(message, spec, error=str(e)) if spec else None
             return make_response(
                 sender=self.name,
-                recipient=message["sender"],
-                task_type=task_type,
-                payload={},
+                recipient=requester,
+                task_type="FEATURE_RESPONSE",
+                context=context,
+                payload={
+                    "status": "error",
+                    "summary": "Engineering could not complete the requested task.",
+                    "artifact_id": artifact_id,
+                    "error": str(e),
+                    "recoverable": False,
+                },
                 status="error",
                 error=str(e)
             )
 
+    def submit_response(self, response, source_message):
+        if delegate is None:
+            raise RuntimeError(
+                "Router transport is unavailable. Ensure agent_transport.py is on PYTHONPATH, "
+                "or run with ENGINEERING_OFFLINE_DEMO_MONGO=1 for the legacy Mongo demo path."
+            )
 
-def _legacy_mongo_db():
-    from enterprise_paths import inter_agent_mongo_db_name, inter_agent_mongo_uri
+        delegate(
+            sender=response["sender"],
+            recipient=response["recipient"],
+            task_type=response["task_type"],
+            context=response.get("context", {}),
+            payload=response.get("payload", {}),
+            routing_hints={
+                "urgency": "normal",
+                "provenance_source": "engineering_agent",
+                "provenance_agent": self.name,
+                "dedupe_key": (
+                    f"{response.get('context', {}).get('run_id', 'no-run')}:"
+                    f"{source_message.get('id')}:engineering-feature-response"
+                ),
+            },
+        )
 
-    client = MongoClient(inter_agent_mongo_uri())
-    return client[os.environ.get("MONGO_DB", inter_agent_mongo_db_name())]
 
+# MongoDB connection — reads MONGO_URI from environment so credentials are never hardcoded.
+# Set the environment variable before running, e.g.:
+#   $env:MONGO_URI = "mongodb+srv://user:pass@cluster.mongodb.net/"
+#   $env:MONGO_DB  = "kanosei"          # optional, defaults to "kanosei"
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB  = os.environ.get("MONGO_DB", "kanosei")
 
-def claim_next_message_legacy(db):
-    """Legacy Mongo inbox for Engineering when the router is not configured."""
+def get_db():
+    client = MongoClient(MONGO_URI)
+    return client[MONGO_DB]
+
+def claim_next_message(db):
+    """Atomically find a pending message for ENG and mark it as in-progress."""
     return db.messages.find_one_and_update(
-        {"recipient": {"$in": ["ENG", "Engineering"]}, "status": "pending"},
+        {"recipient": "ENG", "status": "pending"},
         {"$set": {"status": "in-progress"}},
-        return_document=True,
+        return_document=True  # return the updated document
     )
 
-
-def write_response_legacy(db, response):
+def write_response(db, response):
+    """Insert the agent's response as a new message document."""
     db.messages.insert_one(response)
 
-
-def mark_source_done_legacy(db, message_id, status, error=""):
+def mark_source_done(db, message_id, status, error=""):
+    """Update the original message's status once we're finished with it."""
     db.messages.update_one(
         {"id": message_id},
-        {"$set": {"status": status, "error": error}},
+        {"$set": {"status": status, "error": error}}
     )
 
+def process_one_router_message(agent):
+    if receive is None or ack is None or nack is None:
+        raise RuntimeError(
+            "Router transport is unavailable. Ensure agent_transport.py is on PYTHONPATH, "
+            "or run with ENGINEERING_OFFLINE_DEMO_MONGO=1 for the legacy Mongo demo path."
+        )
 
-def claim_next_message():
-    import sys
-    from pathlib import Path
+    message = receive("Engineering")
+    if message is None:
+        return False
 
-    _root = Path(__file__).resolve().parents[1]
-    if str(_root) not in sys.path:
-        sys.path.insert(0, str(_root))
+    message_id = str(message["id"])
+    print(f"\nPicked up router message: {message_id} ({message['task_type']})")
 
-    from agent_transport import AGENT_ENGINEERING, local_fallback_enabled, receive
+    try:
+        response = agent.handle_message(message)
+        agent.submit_response(response, message)
+    except Exception as exc:
+        nack(message_id, "Engineering", reason=str(exc))
+        print(f"Message {message_id} nacked. Error: {exc}")
+        return True
 
-    if local_fallback_enabled():
-        return claim_next_message_legacy(_legacy_mongo_db())
-    return receive(AGENT_ENGINEERING)
+    ack(message_id, "Engineering")
+    print(f"Feature response submitted and source message acked: {message_id}")
+    print(json.dumps(response, indent=2))
+    return True
 
+def run_router_worker():
+    agent = EngineeringAgent(db=None)
+    poll_interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 
-def deliver_response(db, response: dict) -> None:
-    import sys
-    from pathlib import Path
+    print(f"Engineering agent started. Polling Enterprise Router every {poll_interval}s...")
 
-    _root = Path(__file__).resolve().parents[1]
-    if str(_root) not in sys.path:
-        sys.path.insert(0, str(_root))
+    while True:
+        if not process_one_router_message(agent):
+            time.sleep(poll_interval)
 
-    from agent_transport import local_fallback_enabled, submit
-
-    if local_fallback_enabled():
-        write_response_legacy(db, response)
-    else:
-        submit(response)
-
-
-if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-
-    _root = Path(__file__).resolve().parents[1]
-    if str(_root) not in sys.path:
-        sys.path.insert(0, str(_root))
-
-    from agent_transport import ack, local_fallback_enabled
-
-    db = _legacy_mongo_db() if local_fallback_enabled() else None
+def run_offline_mongo_worker():
+    db = get_db()
     agent = EngineeringAgent(db=db)
     poll_interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 
-    mode = "legacy MongoDB offline demo" if local_fallback_enabled() else "enterprise router"
-    print(f"Engineering agent started ({mode}). Polling every {poll_interval}s...")
+    print(f"Engineering agent started in offline Mongo demo mode. Polling every {poll_interval}s...")
 
     while True:
-        message = claim_next_message()
+        message = claim_next_message(db)
 
         if message is None:
+            # Nothing to do — wait and try again
             time.sleep(poll_interval)
             continue
 
+        # MongoDB adds a _id field that isn't JSON-serialisable; remove it
         message.pop("_id", None)
         print(f"\nPicked up message: {message['id']} ({message['task_type']})")
 
         response = agent.handle_message(message)
 
+        # None means a RecoverableError occurred — message was re-queued, nothing to write
         if response is None:
             print(f"Message {message['id']} re-queued pending token replenishment.")
             time.sleep(poll_interval)
             continue
 
-        deliver_response(db, response)
+        # Write the response back so the PM agent can read it
+        write_response(db, response)
+        # MongoDB mutates the dict by adding _id (ObjectId) when inserting —
+        # pop it so json.dumps doesn't crash on the non-serialisable type.
         response.pop("_id", None)
 
-        if local_fallback_enabled():
-            final_status = "done" if response.get("status") == "done" else "error"
-            mark_source_done_legacy(db, message["id"], final_status, response.get("error", ""))
-        else:
-            ack(str(message["id"]), "Engineering")
+        # Mark the original message as done (or failed)
+        final_status = "done" if response.get("status") == "done" else "error"
+        mark_source_done(db, message["id"], final_status, response.get("error", ""))
 
-        print(f"Response written for message {message['id']}. Status: {response.get('status')}")
+        print(f"Response written for message {message['id']}. Status: {final_status}")
         print(json.dumps(response, indent=2))
+
+if __name__ == "__main__":
+    if os.environ.get("ENGINEERING_OFFLINE_DEMO_MONGO") == "1":
+        run_offline_mongo_worker()
+    else:
+        run_router_worker()
