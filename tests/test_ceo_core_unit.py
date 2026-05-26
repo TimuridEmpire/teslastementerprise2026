@@ -1,4 +1,6 @@
 import unittest
+from unittest import mock
+import importlib
 
 from agents.ceo_agent import CeoAgent
 
@@ -72,6 +74,49 @@ class TestCeoCoreUnit(unittest.TestCase):
         metrics = ceo.get_metrics()
         self.assertEqual(metrics["tasks_per_agent"]["PM Agent"], 2)
         self.assertEqual(metrics["tasks_per_agent"]["Engineering Agent"], 1)
+
+    def test_writing_strategy_artifact_emits_router_event(self):
+        ceo = CeoAgent(name="CEO")
+        fake_record = {
+            "artifact_id": "art-1234abcd",
+            "artifact_type": "strategy",
+            "title": "CEO executive summary",
+            "filename": "artifact.md",
+            "created_at": "2026-05-26T00:00:00Z",
+            "source_task_type": "CEO_REASONING_LOOP",
+            "metadata": {"source": "test"},
+        }
+
+        ceo_module = importlib.import_module(ceo.__class__.__module__)
+        with mock.patch.object(ceo_module, "write_agent_artifact", return_value=fake_record) as writer:
+            with mock.patch.object(ceo, "send_router_envelope", return_value="msg-1") as sender:
+                out = ceo._write_strategy_artifact_unlocked(
+                    title="CEO executive summary",
+                    body="summary",
+                    artifact_type="strategy",
+                    metadata={"source": "test"},
+                    source_task_type="CEO_REASONING_LOOP",
+                )
+
+        self.assertEqual(out, fake_record)
+        writer.assert_called_once()
+        sender.assert_called_once()
+        kwargs = sender.call_args.kwargs
+        self.assertEqual(kwargs["recipient"], "MANAGER")
+        self.assertEqual(kwargs["task_type"], "AGENT_ARTIFACT_READY")
+        self.assertEqual(kwargs["payload"]["artifact_id"], "art-1234abcd")
+
+    def test_oversee_company_writes_exact_final_strategy_to_artifact_body(self):
+        ceo = CeoAgent(name="CEO")
+        expected_strategy = "Focus Q3 on enterprise retention with high-touch onboarding."
+
+        with mock.patch.object(ceo, "_make_strategic_decision_unlocked", return_value=expected_strategy):
+            with mock.patch.object(ceo, "_write_strategy_artifact_unlocked", return_value={"artifact_id": "art-1"}) as writer:
+                out = ceo.oversee_company(["PM Agent", "Marketing Agent"])
+
+        self.assertEqual(out, expected_strategy)
+        writer.assert_called_once()
+        self.assertEqual(writer.call_args.kwargs["body"], expected_strategy)
 
 
 if __name__ == "__main__":
