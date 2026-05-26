@@ -29,6 +29,19 @@ from enterprise_router_client import EnterpriseRouterClient
 HR_AGENT_NAME = os.getenv("HR_AGENT_NAME", "HR")
 agentBacklog = AgentBacklog()
 
+agent_counts_lock = threading.Lock()
+agent_counts = {
+    "PM": 0,
+    "Engineering": 0,
+    "Marketing": 0,
+    "Sales": 0,
+    "Finance": 0,
+    "Legal Compliance": 0,
+    "Strategic Advisor": 0,
+    "CEO": 1,
+    "HR": 1,
+}
+
 
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -60,6 +73,36 @@ def build_envelope(
     }
 
 
+def submit_hr_envelope(
+    *,
+    recipient: str,
+    task_type: str,
+    payload: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None,
+    prefix: str = "hr",
+    router_client: Optional[EnterpriseRouterClient] = None,
+    urgency: str = "normal",
+) -> str:
+    client = router_client or router_client_from_env(HR_AGENT_NAME)
+    envelope = build_envelope(
+        sender=HR_AGENT_NAME,
+        recipient=recipient,
+        task_type=task_type,
+        context=context,
+        payload=payload,
+        prefix=prefix,
+    )
+    return client.submit_envelope(
+        envelope,
+        routing_hints={
+            "urgency": urgency,
+            "provenance_source": "hr_agent",
+            "provenance_agent": HR_AGENT_NAME,
+            "dedupe_key": f"{envelope['id']}:{recipient}:{task_type}",
+        },
+    )
+
+
 def queue_mint_token_request(
     scenario_id: str,
     quantity: int,
@@ -67,9 +110,7 @@ def queue_mint_token_request(
     *,
     router_client: Optional[EnterpriseRouterClient] = None,
 ) -> str:
-    client = router_client or router_client_from_env(HR_AGENT_NAME)
-    envelope = build_envelope(
-        sender=HR_AGENT_NAME,
+    message_id = submit_hr_envelope(
         recipient="CEO",
         task_type="MINT_TOKENS",
         payload={
@@ -78,16 +119,58 @@ def queue_mint_token_request(
             "holder": holder,
         },
         prefix="mint",
-    )
-    message_id = client.submit_envelope(
-        envelope,
-        routing_hints={
-            "urgency": "normal",
-            "provenance_source": "hr_agent",
-            "provenance_agent": HR_AGENT_NAME,
-        },
+        router_client=router_client,
     )
     return f"Mint request queued: {message_id}"
+
+
+@tool
+def update_agent_table(new_counts: dict) -> Dict[str, int]:
+    """
+    Update HR's local view of desired agent counts.
+    """
+    if not isinstance(new_counts, dict):
+        raise TypeError("new_counts must be a dict mapping agent names to integers")
+    with agent_counts_lock:
+        for key, value in new_counts.items():
+            agent_counts[str(key)] = int(value)
+        return dict(agent_counts)
+
+
+@tool
+def setAgentTheadcount(counts: dict | None = None, default: int = 2) -> Dict[str, str]:
+    """
+    Announce per-agent thread allocation through the Enterprise Router.
+
+    The function name keeps the existing misspelling for backward compatibility
+    with prompts/tools that already reference it.
+    """
+    recipients = [
+        "PM",
+        "Engineering",
+        "Marketing",
+        "Sales",
+        "Finance",
+        "Strategic Advisor",
+        "CEO",
+    ]
+    requested_counts = counts or {agent_name: default for agent_name in recipients}
+    results: Dict[str, str] = {}
+    for agent_name, thread_count in requested_counts.items():
+        if str(agent_name).strip().lower() == "hr":
+            continue
+        message_id = submit_hr_envelope(
+            recipient=str(agent_name),
+            task_type="THREAD_ALLOCATION",
+            payload={"max_threads": int(thread_count)},
+            context={"source_tool": "setAgentTheadcount"},
+            prefix="thr",
+        )
+        results[str(agent_name)] = message_id
+    return results
+
+
+setAgentThreadcount = setAgentTheadcount
 
 
 @tool
@@ -109,11 +192,14 @@ def callSupervisor(query: Dict[str, Any]) -> None:
         from langchain_ollama import ChatOllama  # pyright: ignore[reportMissingImports]
 
         hr_agent = create_agent(
-            model=ChatOllama(model="mistral").bind_tools([request_mint_tokens]),
-            tools=[request_mint_tokens],
+            model=ChatOllama(model="mistral").bind_tools(
+                [request_mint_tokens, update_agent_table, setAgentTheadcount]
+            ),
+            tools=[request_mint_tokens, update_agent_table, setAgentTheadcount],
             system_prompt=(
                 "You are an HR agent. Use the provided tools to request token "
-                "minting from the CEO."
+                "minting from the CEO, maintain staffing counts, and route "
+                "thread allocation decisions through the Enterprise Router."
             ),
         )
         hr_agent.invoke(query)
@@ -132,7 +218,7 @@ def process_one_hr_message(
     recipient: str = HR_AGENT_NAME,
 ) -> bool:
     """
-    Fetch one HR message from the shared enterprise_router queue and process it.
+    Fetch one HR message from the Enterprise Router queue and process it.
     Returns True when a message was found, False when the queue was empty.
     """
     client = router_client or router_client_from_env(recipient)
@@ -153,7 +239,7 @@ def process_one_hr_message(
 
 
 def seed_sample_message(router_client: Optional[EnterpriseRouterClient] = None) -> str:
-    """Queue a sample CEO -> HR message through enterprise_router for demos."""
+    """Queue a sample CEO -> HR message through the Enterprise Router for demos."""
     client = router_client or EnterpriseRouterClient.from_env(agent_name="CEO")
     envelope = build_envelope(
         sender="CEO",
@@ -172,7 +258,7 @@ def hr_worker(
     *,
     router_client: Optional[EnterpriseRouterClient] = None,
 ) -> None:
-    """Poll enterprise_router for HR messages and process them."""
+    """Poll the Enterprise Router for HR messages and process them."""
     name = f"HR-Worker-{worker_id}"
     client = router_client or router_client_from_env(HR_AGENT_NAME)
     while not stop_event.is_set():
