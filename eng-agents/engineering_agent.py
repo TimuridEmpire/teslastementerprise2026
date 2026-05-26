@@ -9,11 +9,23 @@ import time
 import shutil
 import importlib.util
 from pathlib import Path
-from crewai import Agent, Crew, Task
-from crewai.llm import LLM
-from crewai_tools import FileReadTool
-import git
-from pymongo import MongoClient
+try:
+    from crewai import Agent, Crew, Task
+    from crewai.llm import LLM
+    from crewai_tools import FileReadTool
+except ImportError:  # pragma: no cover - light demo mode supports missing CrewAI
+    Agent = Crew = Task = FileReadTool = None
+    LLM = None
+
+try:
+    import git
+except ImportError:  # pragma: no cover - push support is optional in light demo mode
+    git = None
+
+try:
+    from pymongo import MongoClient
+except ImportError:  # pragma: no cover - Mongo is legacy offline-demo only
+    MongoClient = None
 
 try:
     from agent_transport import ack, delegate, nack, receive
@@ -34,10 +46,11 @@ except ImportError:
 # support — switch the model string below if you want to try it. llama3 (base) cannot use tools.
 # Local LLM (Ollama) — override with OLLAMA_MODEL env var to switch models without editing code.
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "ollama/deepseek-coder-v2:16b")
-llm = LLM(
-    model=OLLAMA_MODEL,
-    base_url="http://localhost:11434"
-    )
+llm = (
+    LLM(model=OLLAMA_MODEL, base_url="http://localhost:11434")
+    if LLM is not None
+    else None
+)
 
 # GitHub repo for generated output — set GITHUB_REPO_URL to a remote URL to enable push.
 # e.g. $env:GITHUB_REPO_URL = "https://github.com/your-org/generated-output.git"
@@ -47,6 +60,8 @@ OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "C:\\repos\\eng_agent_testing")
 
 def init_output_repo():
     """Ensure OUTPUT_DIR exists as a git repo, cloning from GITHUB_REPO_URL if set."""
+    if git is None:
+        raise RuntimeError("GitPython is required for full Engineering mode.")
     output_path = Path(OUTPUT_DIR)
     if output_path.exists() and (output_path / ".git").exists():
         return git.Repo(output_path)
@@ -198,6 +213,11 @@ class FullSystem:
     # This way we can avoid using global variables and have a cleaner interface for the main execution flow.
     # Make sure to have a description of this class and its purpose in the docstring once it's more fully fleshed out.
     def __init__(self, db=None):
+        if Agent is None or Crew is None or Task is None or llm is None:
+            raise RuntimeError(
+                "CrewAI is not installed. Install crewai and crewai_tools for full "
+                "Engineering mode, or run with ENGINEERING_LIGHT_DEMO=1."
+            )
         self.llm = llm
         self.db = db          # needed for HR token requests
         self.tokens = TokenBudget()
@@ -751,7 +771,7 @@ class EngineeringAgent:
             return (
                 f"Feature: {payload.get('feature_name', 'Unnamed feature')}\n"
                 f"Feature ID: {payload.get('feature_id', '')}\n"
-                f"Description: {payload.get('description', '')}\n"
+                f"Description: {payload.get('spec') or payload.get('description', '')}\n"
                 f"Acceptance criteria:\n{criteria}"
             )
 
@@ -815,6 +835,15 @@ class EngineeringAgent:
         )
         return artifact.get("artifact_id") if isinstance(artifact, dict) else None
 
+    def _light_result(self, spec):
+        return {
+            "status": "light_demo",
+            "iterations": 0,
+            "summary": "Engineering light demo produced a review artifact without generating code.",
+            "generated_code": False,
+            "spec_preview": spec[:500],
+        }
+
     def _response_context(self, message):
         context = dict(message.get("context") or {})
         context["source_message_id"] = str(message.get("id", ""))
@@ -829,16 +858,29 @@ class EngineeringAgent:
 
         try:
             spec = self._build_spec(task_type, payload)
-            system = FullSystem(db=self.db)
-            max_iterations = int(os.environ.get("MAX_ITERATIONS", "10"))
-            result = system.review_and_iterate(spec, max_iterations)
+            use_light_demo = (
+                os.environ.get("ENGINEERING_LIGHT_DEMO", "").strip().lower()
+                in {"1", "true", "yes", "on"}
+                or Agent is None
+                or Crew is None
+                or Task is None
+            )
+            if use_light_demo:
+                result = self._light_result(spec)
+            else:
+                system = FullSystem(db=self.db)
+                max_iterations = int(os.environ.get("MAX_ITERATIONS", "10"))
+                result = system.review_and_iterate(spec, max_iterations)
             artifact_id = self._write_artifact(message, spec, result=result)
-            is_success = result.get("status") == "success"
+            is_success = result.get("status") in {"success", "light_demo"}
             response_payload = {
                 "status": "done" if is_success else "error",
                 "summary": (
                     "Feature implementation completed."
-                    if is_success else "Feature implementation did not pass engineering validation."
+                    if result.get("status") == "success"
+                    else "Engineering light demo artifact produced; no code was generated."
+                    if result.get("status") == "light_demo"
+                    else "Feature implementation did not pass engineering validation."
                 ),
                 "artifact_id": artifact_id,
                 "details": result,
@@ -913,6 +955,8 @@ MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
 MONGO_DB  = os.environ.get("MONGO_DB", "kanosei")
 
 def get_db():
+    if MongoClient is None:
+        raise RuntimeError("pymongo is required for ENGINEERING_OFFLINE_DEMO_MONGO=1.")
     client = MongoClient(MONGO_URI)
     return client[MONGO_DB]
 

@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Activity, Layers, GitBranch, TrendingUp,
   Crown, Package, Code2, Users, DollarSign, Megaphone,
-  ArrowRight, CheckCircle2, Circle,
+  ArrowRight, CheckCircle2, Circle, FileText,
 } from 'lucide-react'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
@@ -13,13 +13,13 @@ import {
   CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import {
-  AGENTS, COMPANY_KPIS, ACTIVITY_FEED, TASK_THROUGHPUT, REVENUE_FORECAST,
+  AGENTS, COMPANY_KPIS, TASK_THROUGHPUT, REVENUE_FORECAST,
   BUDGET_ALLOCATIONS, AGENT_LOAD, PIPELINE, MESSAGE_FLOW, KANOSEI_WORKFLOWS,
 } from '@/lib/mock-data'
-import { useHealth, useAudit, useQueue } from '@/lib/hooks'
+import { useHealth, useAudit, useQueue, useArtifacts } from '@/lib/hooks'
 import { auditToThroughput } from '@/lib/live-metrics'
 import type { AgentId } from '@/lib/types'
-import type { ApiAuditEvent, ApiQueueItem } from '@/lib/api-types'
+import type { ApiArtifact, ApiAuditEvent, ApiQueueItem } from '@/lib/api-types'
 
 // ─── Agent icon map ────────────────────────────────────────────────────────
 const AGENT_ICONS: Record<AgentId, React.ReactNode> = {
@@ -46,7 +46,59 @@ function Sparkline({ data, color = 'var(--primary)', height = 28 }: { data: numb
 }
 
 // ─── Pulse Tab ─────────────────────────────────────────────────────────────
-function PulseTab({ liveAudit, liveQueue }: { liveAudit: any[] | null; liveQueue: ApiQueueItem[] | null }) {
+function LatestWorkPanel({ artifacts }: { artifacts: ApiArtifact[] | null }) {
+  const latest = artifacts?.[0] ?? null
+  return (
+    <div className="card" style={{ padding: 26, display: 'flex', flexDirection: 'column', minHeight: 320 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <FileText size={14} style={{ color: 'var(--primary-2)' }} />
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>Latest agent output</div>
+        </div>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: latest ? 'var(--green)' : 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+          {latest && <span className="live-dot" style={{ width: 5, height: 5 }} />}
+          {latest ? 'live' : 'waiting'}
+        </span>
+      </div>
+      {latest ? (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12.5, color: 'var(--text-1)', fontWeight: 600 }}>{latest.title}</div>
+            <div style={{ fontSize: 10.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', marginTop: 4 }}>
+              {latest.agent_name} · {latest.artifact_type} · {new Date(latest.created_at).toLocaleString()}
+            </div>
+          </div>
+          <pre
+            style={{
+              margin: 0,
+              flex: 1,
+              maxHeight: 260,
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              fontSize: 11,
+              lineHeight: 1.55,
+              color: 'var(--text-2)',
+              fontFamily: 'var(--font-mono)',
+              padding: 14,
+              borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'rgba(255,255,255,0.025)',
+            }}
+          >
+            {latest.content ?? 'Artifact content is loading...'}
+          </pre>
+        </>
+      ) : (
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: 'var(--text-3)', fontSize: 12, lineHeight: 1.6, border: '1px solid var(--border)', borderRadius: 8, background: 'rgba(255,255,255,0.02)', padding: 24 }}>
+          No live agent outputs yet. Complete onboarding or run the initiation workflow.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PulseTab({ liveAudit, liveQueue, liveArtifacts }: { liveAudit: any[] | null; liveQueue: ApiQueueItem[] | null; liveArtifacts: ApiArtifact[] | null }) {
   const kpis = liveQueue !== null
     ? [
       ...COMPANY_KPIS.slice(0, 3),
@@ -96,12 +148,14 @@ function PulseTab({ liveAudit, liveQueue }: { liveAudit: any[] | null; liveQueue
         })}
       </div>
 
+      <LatestWorkPanel artifacts={liveArtifacts} />
+
       {/* Revenue chart full width */}
       <div className="card" style={{ padding: 26 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 18 }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>Revenue forecast</div>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>Actual vs. projected · last 6 months + next quarter</div>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>Mock/demo business data · router does not produce revenue metrics yet</div>
           </div>
           <div style={{ display: 'flex', gap: 16, fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -167,11 +221,16 @@ function PulseTab({ liveAudit, liveQueue }: { liveAudit: any[] | null; liveQueue
                 <span className="live-dot" style={{ width: 5, height: 5 }} /> live
               </span>
             ) : (
-              <span style={{ fontSize: 10.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>mock</span>
+              <span style={{ fontSize: 10.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>waiting</span>
             )}
           </div>
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, maxHeight: 320 }}>
-            {(liveAudit ?? ACTIVITY_FEED).slice(0, 7).map((ev: any, i: number) => {
+            {liveAudit && liveAudit.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '36px 12px', color: 'var(--text-3)', fontSize: 12, lineHeight: 1.5 }}>
+                No live router activity yet. Complete onboarding or run the initiation workflow.
+              </div>
+            )}
+            {(liveAudit ?? []).slice(0, 7).map((ev: any, i: number) => {
               const agentId = (ev.agentId ?? ev.actor ?? 'ceo') as AgentId
               const color   = AGENT_COLOR[agentId] ?? 'var(--primary)'
               const icon    = AGENT_ICONS[agentId]
@@ -536,6 +595,7 @@ export default function DashboardPage() {
   const { data: health } = useHealth()
   const { data: audit  } = useAudit(50)
   const { data: managerQueue } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  const { data: artifacts } = useArtifacts('', 10)
 
   return (
     <div style={{ padding: 'clamp(20px, 3vw, 32px) clamp(20px, 3vw, 32px) 40px', maxWidth: 1400, margin: '0 auto' }}>
@@ -597,7 +657,7 @@ export default function DashboardPage() {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
         >
-          {tab === 'pulse'        && <PulseTab liveAudit={audit} liveQueue={managerQueue} />}
+          {tab === 'pulse'        && <PulseTab liveAudit={audit} liveQueue={managerQueue} liveArtifacts={artifacts} />}
           {tab === 'distribution' && <DistributionTab />}
           {tab === 'pipeline'     && <PipelineTab liveAudit={audit} />}
           {tab === 'performance'  && <PerformanceTab liveAudit={audit} />}

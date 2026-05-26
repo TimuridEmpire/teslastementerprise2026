@@ -678,6 +678,22 @@ class CeoAgent(ThreadSafeAgentMixin):
                 context=payload,
             )
 
+        if task == "MANAGER_INTERVENTION":
+            departments = payload.get("departments") or payload.get("subordinate_agents") or []
+            if not isinstance(departments, list):
+                departments = []
+            instruction = str(
+                payload.get("instruction")
+                or payload.get("message")
+                or payload.get("prompt")
+                or ""
+            )
+            return self.execute_reasoning_loop(
+                instruction,
+                [str(x) for x in departments] if departments else None,
+                context={**payload, **(envelope.get("context") or {})},
+            )
+
         if task == "CEO_METRICS":
             return {
                 "ok": True,

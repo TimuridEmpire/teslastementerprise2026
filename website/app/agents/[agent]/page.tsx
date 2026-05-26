@@ -164,7 +164,13 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
     setSending(true)
     setSendError('')
     try {
-      await api.manager.intervene({ recipient: routerRecipient, instruction: instruction.trim(), priority: 'normal' })
+      await api.manager.intervene({
+        recipient: routerRecipient,
+        instruction: instruction.trim(),
+        task_type: routerRecipient === 'CEO' ? 'CEO_REASONING_LOOP' : 'MANAGER_INTERVENTION',
+        priority: 'normal',
+        context: { source: 'agent_page', ui_agent_id: agentId },
+      })
       setSent(true)
       setInstruction('')
       setTimeout(() => setSent(false), 3000)

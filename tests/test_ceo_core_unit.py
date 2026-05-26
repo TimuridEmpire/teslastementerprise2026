@@ -132,6 +132,27 @@ class TestCeoCoreUnit(unittest.TestCase):
         self.assertEqual(calls[0]["task_type"], "CEO_STRATEGY_DIRECTIVE")
         self.assertIn("strategy", calls[0]["payload"])
 
+    def test_manager_intervention_runs_ceo_reasoning_loop(self):
+        ceo = CeoAgent(name="CEO")
+        with mock.patch.object(ceo, "execute_reasoning_loop", return_value={"ok": True}) as reasoning:
+            out = ceo.on_bus_envelope(
+                {
+                    "task_type": "MANAGER_INTERVENTION",
+                    "context": {"source": "command_chat"},
+                    "payload": {
+                        "instruction": "Create a launch plan.",
+                        "departments": ["PM", "Engineering"],
+                    },
+                }
+            )
+
+        self.assertEqual(out, {"ok": True})
+        reasoning.assert_called_once()
+        args, kwargs = reasoning.call_args
+        self.assertEqual(args[0], "Create a launch plan.")
+        self.assertEqual(args[1], ["PM", "Engineering"])
+        self.assertEqual(kwargs["context"]["source"], "command_chat")
+
 
 if __name__ == "__main__":
     unittest.main()

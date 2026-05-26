@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { api } from '@/lib/api'
-import { parseCommand } from '@/lib/chat-router'
+import { parseCommand, routerAgentName } from '@/lib/chat-router'
 import { SLASH_COMMANDS } from '@/lib/chat-router'
 import ChatMessage, { type ChatMsg } from './ChatMessage'
 import ChatInput from './ChatInput'
@@ -86,12 +86,14 @@ export default function CommandChat() {
     setSending(true)
 
     try {
-      const recipient = parsed.type === 'agent' ? parsed.agentId.toUpperCase() : 'CEO'
+      const recipient = parsed.type === 'agent' ? routerAgentName(parsed.agentId) : 'CEO'
       const instruction = parsed.type === 'agent' ? parsed.text || raw : raw
+      const taskType = recipient === 'CEO' ? 'CEO_REASONING_LOOP' : 'MANAGER_INTERVENTION'
 
       await api.manager.intervene({
         recipient,
         instruction,
+        task_type: taskType,
         priority: 'normal',
         context: { source: 'command_chat' },
       })
@@ -99,7 +101,7 @@ export default function CommandChat() {
       // Replace loading bubble with success
       setMessages(prev => prev.map(m =>
         m.id === loadingId
-          ? { ...m, loading: false, text: `Instruction sent to ${agentName}. The agent will process this and respond shortly.` }
+          ? { ...m, loading: false, text: `Instruction queued for ${agentName}. Watch live outputs, audit, and queues for progress.` }
           : m
       ))
     } catch (err) {

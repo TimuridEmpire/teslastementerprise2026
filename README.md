@@ -131,19 +131,12 @@ python .\run_agents.py --agents all
 Current local worker behavior:
 
 - `CEO`, `PM`, `Marketing`, `HR`, and `Strategic Advisor` should start.
-- `Engineering` is skipped unless `crewai` and `crewai_tools` are installed.
+- `Engineering` runs the full CrewAI path when `crewai` and `crewai_tools` are installed.
+- If those packages are missing, `Engineering` starts in deterministic light-demo mode. It still consumes `IMPLEMENT_FEATURE`, writes an Engineering artifact, submits `FEATURE_RESPONSE`, and acks the router message, but it does not generate code.
 - `Sales` and `Finance` are skipped because this codebase does not yet include worker implementations for them.
 - PM and Marketing use local file storage by default (`data/pm_storage.json`) so local MongoDB is not required. Set `PM_STORAGE_BACKEND=mongo` only if you intentionally want PM/Marketing domain storage in Mongo.
 
-6. Start the initiation workflow:
-
-```powershell
-python .\scripts\initiate_router_workflow.py --no-include-engineering
-```
-
-This queues the first messages that make the agents communicate. Without this seed, the workers mostly poll empty queues.
-
-7. Start the website in another terminal:
+6. Start the website in another terminal:
 
 ```powershell
 cd "<project-root>\website"
@@ -153,18 +146,32 @@ npm run dev
 
 Open the Next.js URL from the terminal, usually `http://localhost:3000`.
 
+7. Start the demo workflow from the website:
+
+- If onboarding appears, complete it. The final onboarding step queues a real `CEO_REASONING_LOOP` message through the Enterprise Router.
+- If the app opens directly to `/dashboard`, use `/chat` or an agent page to send an instruction to CEO. CEO-targeted website instructions use `CEO_REASONING_LOOP`.
+
+Alternative command-line seed:
+
+```powershell
+python .\scripts\initiate_router_workflow.py
+```
+
+This queues starter messages as CEO. Without onboarding/chat/this seed, workers mostly poll empty queues.
+
 What you should see:
 
 - `/dashboard` and `/observability` read router health, audit, and queue data.
-- `/observability` shows live audit events and router throughput after the initiation script submits messages.
+- `/dashboard` shows the newest live agent artifact in the `Latest agent output` panel.
+- `/observability` shows live audit events and router throughput after onboarding or the initiation script submits messages.
 - `/messages` shows the live MANAGER queue. It does not show all historical messages.
-- Agent pages show that agent's current inbound queue while messages are still queued.
+- Agent pages show that agent's current inbound queue while messages are still queued, plus that agent's newest markdown output.
 - Running workers fetch queued messages, process them, then ack or nack them.
 - Router audit history shows the lifecycle of submitted, fetched, acked, and nacked messages.
 
 ### Seeing Agent Responses
 
-Agent responses are not chat bubbles yet. They are router messages and audit events.
+Agent responses are not chat bubbles yet. They are router messages, audit events, and markdown artifacts.
 
 Where to look:
 
@@ -175,11 +182,12 @@ Invoke-WebRequest -UseBasicParsing "http://localhost:8000/audit?limit=50" -Heade
 
 In the website:
 
+- `/dashboard`: newest live artifact across all agents.
 - `/observability`: best place to see that messages were submitted, fetched, acked, or nacked.
 - `/messages`: shows the MANAGER queue only.
-- `/agents/<agent>`: shows that agent's live inbound queue if the message has not already been fetched.
+- `/agents/<agent>`: shows that agent's live inbound queue if the message has not already been fetched, and that agent's newest artifact under `Agent Outputs`.
 
-Important: once a worker fetches and ack/nacks a message, it leaves the queue. The website currently shows live queues and audit events, not a full conversation transcript. Domain outputs from PM/Marketing are written to local files such as `data/pm_storage.json`, `data/projects.json`, and `data/campaigns.json`.
+Important: once a worker fetches and ack/nacks a message, it leaves the queue. Use audit and artifacts to see completed work. The current website is not a full conversation transcript.
 
 ### What Is Live vs. Mock
 
@@ -188,6 +196,7 @@ Live today:
 - Router health (`/health`).
 - Router audit log (`/audit`).
 - Queue views (`/queue/{recipient}`).
+- Markdown artifacts (`/artifacts`) from CEO, PM, HR, and Engineering light/full demo paths.
 - Router throughput charts derived from audit events.
 - Manager interventions that submit real router messages.
 
@@ -217,14 +226,16 @@ The router does not decide business strategy. It routes and records messages. Th
 
 ### Onboarding Page
 
-The website currently redirects `/` to `/dashboard`. That skips onboarding, but onboarding is not what starts the backend system. The backend system starts when:
+Onboarding is now a real backend trigger. The final onboarding step sends a `CEO_REASONING_LOOP` message to the router with the company name, one-liner, ideal customer, 90-day goal, selected departments, and a run id.
+
+The backend system still requires:
 
 1. The router is running.
 2. Local keys are generated.
 3. Agent workers are running.
-4. `scripts/initiate_router_workflow.py` submits starter messages.
+4. Onboarding, website chat, or `scripts/initiate_router_workflow.py` submits starter messages.
 
-Skipping onboarding is not why messages fail. It only means the UI opens at the dashboard instead of a guided setup screen.
+If you already skipped onboarding and the dashboard opens immediately, send a CEO instruction from `/chat` or run the initiation script.
 
 Common local issues:
 

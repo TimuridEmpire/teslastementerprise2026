@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Filter, ChevronRight, Copy, CheckCircle2, Circle } from 'lucide-react'
-import { MESSAGES, AGENTS } from '@/lib/mock-data'
+import { AGENTS } from '@/lib/mock-data'
 import { useQueue } from '@/lib/hooks'
 import type { AgentId } from '@/lib/types'
 
@@ -44,24 +44,7 @@ export default function MessagesPage() {
       dedupe_key:  item.dedupe_key,
       isLive:      true,
     }))
-    : MESSAGES.map(m => ({
-      id:        m.id,
-      sender:    m.sender,
-      recipient: m.recipient,
-      task_type: m.task_type,
-      status:    m.status,
-      delivery:  m.delivery_state,
-      priority:  m.urgency === 'critical' ? 10 : m.urgency === 'high' ? 7 : m.urgency === 'normal' ? 5 : 2,
-      timestamp: m.timestamp,
-      payload:   m.payload,
-      context:   m.context,
-      error:     m.error,
-      attempts:  m.attempt_count,
-      blocked:   m.error ?? '',
-      lease_until: null,
-      dedupe_key: null,
-      isLive:    false,
-    }))
+    : []
 
   const filtered = messages.filter(m => {
     const agentMatch  = filter.agent  === 'all' || m.sender === filter.agent || m.recipient === filter.agent
@@ -96,7 +79,7 @@ export default function MessagesPage() {
           <p className="text-[12px] mt-0.5" style={{ color: 'var(--text-3)' }}>
             {hasRouterData
               ? `${liveQueue.length} live queue ${liveQueue.length === 1 ? 'item' : 'items'}`
-              : `${MESSAGES.length} mock messages${queueEnabled && queueError ? ' - router unavailable' : ''}`}
+              : `No live router data${queueEnabled && queueError ? ' - router unavailable' : ''}`}
           </p>
         </div>
         {hasRouterData && (
@@ -154,7 +137,9 @@ export default function MessagesPage() {
         {/* Message list */}
         <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
           {filtered.length === 0 && (
-            <div className="text-center py-12 text-[12px]" style={{ color: 'var(--text-3)' }}>No messages match your filter</div>
+            <div className="text-center py-12 text-[12px]" style={{ color: 'var(--text-3)' }}>
+              {hasRouterData ? 'No live messages match your filter' : 'No live router activity yet. Complete onboarding or run the initiation workflow.'}
+            </div>
           )}
           {filtered.map((msg, i) => {
             const isSelected = selected === msg.id

@@ -62,6 +62,30 @@ def test_process_one_hr_message_fetches_from_router_and_acks_after_success():
     assert client.nacked == []
 
 
+def test_process_one_hr_message_writes_staffing_artifact(monkeypatch):
+    hr_agent = load_hr_agent_module()
+    client = FakeRouterClient(sample_hr_envelope())
+    artifacts = []
+
+    def fake_write_agent_artifact(agent_name, **kwargs):
+        artifacts.append((agent_name, kwargs))
+        return {"artifact_id": "art-hr"}
+
+    monkeypatch.setattr(hr_agent, "write_agent_artifact", fake_write_agent_artifact)
+
+    processed = hr_agent.process_one_hr_message(
+        router_client=client,
+        supervisor=lambda _envelope: None,
+    )
+
+    assert processed is True
+    assert client.acked == [("hr-msg-1", "HR")]
+    assert artifacts
+    assert artifacts[0][0] == "HR"
+    assert artifacts[0][1]["artifact_type"] == "staffing"
+    assert artifacts[0][1]["source_task_type"] == "TALENT_REALLOCATION"
+
+
 def test_process_one_hr_message_nacks_after_supervisor_failure():
     hr_agent = load_hr_agent_module()
     client = FakeRouterClient(sample_hr_envelope())

@@ -76,6 +76,10 @@ def missing_modules(spec: AgentSpec) -> list[str]:
     ]
 
 
+def should_use_light_demo(key: str, spec: AgentSpec) -> bool:
+    return key == "engineering" and bool(missing_modules(spec))
+
+
 def list_status(selected: list[str]) -> int:
     for key in selected:
         spec = AGENTS.get(key)
@@ -83,7 +87,11 @@ def list_status(selected: list[str]) -> int:
             print(f"{key}: unknown")
             continue
         env_name, _ = resolve_key(spec)
-        state = "implemented" if spec.implemented else "missing worker"
+        missing = missing_modules(spec)
+        if should_use_light_demo(key, spec):
+            state = f"implemented; light demo fallback available because missing {', '.join(missing)}"
+        else:
+            state = "implemented" if spec.implemented else "missing worker"
         key_state = f"key from {env_name}" if env_name else "no key env set"
         print(f"{spec.display_name}: {state}; {key_state}")
     return 0
@@ -119,7 +127,7 @@ def main() -> int:
             skipped = True
             continue
         missing = missing_modules(spec)
-        if missing:
+        if missing and not should_use_light_demo(key, spec):
             print(f"Skipping {spec.display_name}: missing Python package(s): {', '.join(missing)}.")
             skipped = True
             continue
@@ -133,6 +141,12 @@ def main() -> int:
         env["ENTERPRISE_ROUTER_URL"] = router_url
         env["ENTERPRISE_AGENT_NAME"] = spec.router_name
         env["ENTERPRISE_AGENT_API_KEY"] = api_key
+        if should_use_light_demo(key, spec):
+            env["ENGINEERING_LIGHT_DEMO"] = "1"
+            print(
+                f"{spec.display_name}: missing {', '.join(missing)}; "
+                "starting deterministic light demo mode."
+            )
 
         cmd = [sys.executable, str(RUN_SINGLE), spec.router_name, "--poll-interval", str(args.poll_interval)]
         print(f"Starting {spec.display_name} using {env_name}.")

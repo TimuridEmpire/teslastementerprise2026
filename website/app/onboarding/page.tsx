@@ -7,6 +7,8 @@ import {
   Sparkles, ArrowRight, ChevronLeft, Check, Send, Zap,
 } from 'lucide-react'
 import type { AgentId } from '@/lib/types'
+import { api } from '@/lib/api'
+import { routerAgentName } from '@/lib/chat-router'
 
 /* ─── Agent definitions ─────────────────────────────────────────────────── */
 interface AgentDef {
@@ -403,7 +405,7 @@ function SpinUpStep({
 }: {
   answers: Answers
   selected: Selection
-  onDone: () => void
+  onDone: () => void | Promise<void>
 }) {
   const team = AGENT_DEFS.filter(a => selected[a.id])
   const [progress, setProgress] = useState(0)
@@ -516,7 +518,54 @@ export default function OnboardingPage() {
     ceo: true, product: true, engineering: true, hr: true, sales: true, marketing: true, finance: true,
   })
 
-  const finish = () => {
+  const finish = async () => {
+    const selectedAgentIds = Object.entries(selected)
+      .filter(([, enabled]) => enabled)
+      .map(([id]) => id as AgentId)
+    const selectedDepartments = selectedAgentIds.map(routerAgentName)
+    const runId = `onboard-${Date.now().toString(36)}`
+    const companyName = answers.name || 'New company'
+    const prompt = [
+      `Company: ${companyName}`,
+      `One-liner: ${answers.oneliner || 'Not supplied'}`,
+      `Ideal customer: ${answers.customer || 'Not supplied'}`,
+      `90-day goal: ${answers.goal || 'Not supplied'}`,
+      `Selected departments: ${selectedDepartments.join(', ')}`,
+      '',
+      'Create an initial operating plan, identify the most important work, and delegate execution through PM, Engineering, HR, and Marketing where useful.',
+    ].join('\n')
+
+    try {
+      await api.manager.intervene({
+        recipient: 'CEO',
+        instruction: prompt,
+        task_type: 'CEO_REASONING_LOOP',
+        priority: 'high',
+        context: {
+          source: 'onboarding',
+          run_id: runId,
+          selected_agent_ids: selectedAgentIds,
+        },
+        payload: {
+          message: prompt,
+          company_name: companyName,
+          one_liner: answers.oneliner || '',
+          ideal_customer: answers.customer || '',
+          ninety_day_goal: answers.goal || '',
+          departments: selectedDepartments,
+        },
+      })
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('kanosei_last_onboarding_run_id', runId)
+      }
+    } catch (error) {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(
+          'kanosei_last_onboarding_error',
+          error instanceof Error ? error.message : 'Failed to queue onboarding workflow',
+        )
+      }
+    }
     if (typeof window !== 'undefined') {
       localStorage.setItem('kanosei_onboarded', 'true')
       if (answers.name) localStorage.setItem('kanosei_company', answers.name)
@@ -566,5 +615,4 @@ export default function OnboardingPage() {
     </div>
   )
 }
-
 

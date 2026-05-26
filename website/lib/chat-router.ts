@@ -21,6 +21,20 @@ export type ParsedCommand =
   | { type: 'agent'; agentId: AgentId; agentName: string; text: string; color: string }
   | { type: 'broadcast'; text: string }
 
+export const ROUTER_AGENT_BY_UI_ID: Record<AgentId, string> = {
+  ceo: 'CEO',
+  product: 'PM',
+  engineering: 'Engineering',
+  hr: 'HR',
+  sales: 'Sales',
+  marketing: 'Marketing',
+  finance: 'Finance',
+}
+
+export function routerAgentName(agentId: AgentId): string {
+  return ROUTER_AGENT_BY_UI_ID[agentId]
+}
+
 /** Parse a user message. Slash prefix routes to specific agent; no prefix = broadcast to CEO. */
 export function parseCommand(raw: string): ParsedCommand {
   const trimmed = raw.trim()

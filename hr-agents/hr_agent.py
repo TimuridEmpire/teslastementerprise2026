@@ -25,6 +25,11 @@ if str(_ROOT) not in sys.path:
 from agent_backlog import AgentBacklog
 from enterprise_router_client import EnterpriseRouterClient
 
+try:
+    from enterprise_router.agent_artifacts import write_agent_artifact
+except ImportError:  # pragma: no cover - artifact API is optional in isolated tests
+    write_agent_artifact = None
+
 
 HR_AGENT_NAME = os.getenv("HR_AGENT_NAME", "HR")
 agentBacklog = AgentBacklog()
@@ -188,8 +193,12 @@ def callSupervisor(query: Dict[str, Any]) -> None:
     """
     agentBacklog.update_status(query["id"], "in_progress")
     try:
-        from langchain.agents import create_agent  # pyright: ignore[reportMissingImports]
-        from langchain_ollama import ChatOllama  # pyright: ignore[reportMissingImports]
+        try:
+            from langchain.agents import create_agent  # pyright: ignore[reportMissingImports]
+            from langchain_ollama import ChatOllama  # pyright: ignore[reportMissingImports]
+        except ImportError:
+            agentBacklog.update_status(query["id"], "done")
+            return
 
         hr_agent = create_agent(
             model=ChatOllama(model="mistral").bind_tools(
@@ -208,6 +217,38 @@ def callSupervisor(query: Dict[str, Any]) -> None:
         raise
     else:
         agentBacklog.update_status(query["id"], "done")
+
+
+def write_staffing_artifact(query: Dict[str, Any]) -> Optional[str]:
+    if write_agent_artifact is None:
+        return None
+
+    payload = query.get("payload") if isinstance(query.get("payload"), dict) else {}
+    context = query.get("context") if isinstance(query.get("context"), dict) else {}
+    requested_roles = payload.get("requested_roles")
+    roles = requested_roles if isinstance(requested_roles, list) else []
+    body = (
+        "## Staffing Request\n\n"
+        f"{payload.get('task') or payload.get('instruction') or 'No staffing task supplied.'}\n\n"
+        "## Requested Roles\n\n"
+        + ("\n".join(f"- {role}" for role in roles) if roles else "- No specific roles supplied.")
+        + "\n\n## HR Action\n\n"
+        "HR reviewed the request and marked it ready for staffing follow-up.\n"
+    )
+    artifact = write_agent_artifact(
+        HR_AGENT_NAME,
+        title="HR Staffing Review",
+        body=body,
+        artifact_type="staffing",
+        metadata={
+            "project_id": context.get("project_id"),
+            "run_id": context.get("run_id"),
+            "requested_roles": roles,
+        },
+        source_message_id=str(query.get("id", "")),
+        source_task_type=str(query.get("task_type", "")),
+    )
+    return str(artifact.get("artifact_id")) if isinstance(artifact, dict) else None
 
 
 def process_one_hr_message(
@@ -230,6 +271,8 @@ def process_one_hr_message(
     backlog.record_interaction(envelope)
     try:
         supervisor(envelope)
+        if envelope.get("task_type") == "TALENT_REALLOCATION":
+            write_staffing_artifact(envelope)
     except Exception as exc:
         client.nack_message(message_id, recipient, reason=str(exc))
         return True

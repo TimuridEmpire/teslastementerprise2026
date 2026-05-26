@@ -26,6 +26,11 @@ from artifact_writer import render_roadmap_md, write_artifact, publish_artifact
 from agent_backlog import AgentBacklog
 from agent_logger import get_agent_logger, log_inter_agent_message
 
+try:
+    from enterprise_router.agent_artifacts import write_agent_artifact
+except ImportError:  # pragma: no cover - artifact API is optional in isolated PM tests
+    write_agent_artifact = None
+
 
 class PMAgent:
     def __init__(self, name: str = "PM") -> None:
@@ -174,6 +179,20 @@ class PMAgent:
             project_id=project["id"],
         )
         self.logger.info(f"PMAgent: roadmap artifact written to {roadmap_artifact['path']}")
+        if write_agent_artifact is not None:
+            write_agent_artifact(
+                self.name,
+                title=f"{product} Roadmap",
+                body=roadmap_md,
+                artifact_type="roadmap",
+                metadata={
+                    "project_id": project["id"],
+                    "product_name": product,
+                    "source": "DEFINE_Q2_ROADMAP",
+                },
+                source_message_id=str(msg.get("id", "")),
+                source_task_type="DEFINE_Q2_ROADMAP",
+            )
         # publish_artifact() sends ARTIFACT_PUBLISHED to CEO via the router.
         # It is non-fatal: a failure logs a warning and never raises.
         publish_artifact(roadmap_artifact, source_msg=msg)
@@ -259,6 +278,29 @@ class PMAgent:
         strategy = str(payload.get("strategy") or "")
         project_id = self._resolve_project_id(msg)
         requested_roles = self._derive_staffing_roles(strategy)
+
+        if write_agent_artifact is not None:
+            write_agent_artifact(
+                self.name,
+                title="PM Strategy Routing Plan",
+                artifact_type="strategy-routing",
+                body=(
+                    "## CEO Strategy\n\n"
+                    f"{strategy or 'No strategy text supplied.'}\n\n"
+                    "## Staffing Request\n\n"
+                    + "\n".join(f"- {role}" for role in requested_roles)
+                    + "\n\n## Routed Work\n\n"
+                    "- Sent staffing request to HR.\n"
+                    "- Sent PM report back to CEO.\n"
+                ),
+                metadata={
+                    "project_id": project_id,
+                    "requested_roles": requested_roles,
+                    "source": "CEO_STRATEGY_DIRECTIVE",
+                },
+                source_message_id=str(msg.get("id", "")),
+                source_task_type="CEO_STRATEGY_DIRECTIVE",
+            )
 
         hr_msg = Message.create(
             sender=self.name,

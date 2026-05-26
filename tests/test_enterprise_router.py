@@ -108,3 +108,36 @@ def test_registration_flow(router: EnterpriseRouter):
     key = router.approve_registration("PM", "admin", issue_api_key=True)
     assert key
     router.authenticate_agent("PM", key)
+
+
+def test_demo_agent_allowed_task_contract_permits_live_chain(tmp_path):
+    from scripts.bootstrap_router_agents import AGENTS
+
+    db = str(tmp_path / "router.db")
+    router = EnterpriseRouter(backend="sqlite", db_path=db, shared_secret="test-secret")
+    contracts = {
+        name: allowed_task_types
+        for name, _role, _hierarchy, _trust, allowed_task_types in AGENTS
+    }
+    for agent_name, task_types in contracts.items():
+        router.register_agent(
+            AgentRecord(
+                agent_name=agent_name,
+                role=agent_name.lower(),
+                allowed_task_types=task_types,
+            )
+        )
+
+    demo_messages = [
+        _envelope("MANAGER", "CEO", "CEO_REASONING_LOOP"),
+        _envelope("CEO", "PM", "CEO_STRATEGY_DIRECTIVE"),
+        _envelope("PM", "Engineering", "IMPLEMENT_FEATURE"),
+        _envelope("PM", "HR", "TALENT_REALLOCATION"),
+        _envelope("PM", "Marketing", "LAUNCH_CAMPAIGN"),
+        _envelope("Engineering", "PM", "FEATURE_RESPONSE"),
+        _envelope("PM", "CEO", "PM_REPORT"),
+        _envelope("CEO", "MANAGER", "AGENT_ARTIFACT_READY"),
+    ]
+
+    for envelope in demo_messages:
+        assert router.submit_message(envelope, RoutingHints(priority=5)) == envelope.id

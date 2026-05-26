@@ -111,6 +111,7 @@ export interface ApiHealth {
 export interface ApiInterventionBody {
   recipient:         string
   instruction:       string
+  task_type?:        string
   priority?:         'low' | 'normal' | 'high' | 'critical'
   context?:          Record<string, unknown>
   payload?:          Record<string, unknown>
