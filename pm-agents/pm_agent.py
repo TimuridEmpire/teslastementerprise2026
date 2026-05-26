@@ -17,6 +17,7 @@ from pm_tools import (
     create_project,
     add_request_to_project,
     decide_routes,
+    derive_target_release,
 )
 from pm_storage import storage
 from artifact_writer import render_roadmap_md, write_artifact, publish_artifact
@@ -181,6 +182,7 @@ class PMAgent:
             prioritized=prioritized,
             project_id=project["id"],
             artifact_path=roadmap_artifact["path"],
+            target_release=derive_target_release(msg.get("context", {})),
         )
         for route in routes:
             # Merge base correlation context with any route-specific context.
