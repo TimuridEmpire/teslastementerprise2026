@@ -5,9 +5,9 @@ Finance-managed distribution token system.
 
 Responsibilities:
   - Finance (CFO) creates and distributes tokens to all agents
-  - When any agent's tokens are maxed out, they request more from Finance
-  - Finance evaluates the request and approves/denies it
-  - CEO is notified (FYI) of all token top-up decisions — approval comes from Finance's CFO
+  - When any agent's tokens are maxed out, they send a TOKEN_TOPUP_REQUEST to Finance
+  - Finance evaluates and approves/denies
+  - CEO is notified (FYI) — approval authority is Finance/CFO, not CEO
 """
 
 from __future__ import annotations
@@ -18,33 +18,32 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from ceo_distribution_tokens import CeoDistributionTokenRegistry, DistributionTokenError
-from message_schema import Message
+# ── Repo imports ──────────────────────────────────────────────────────────────
+from ceo_distribution_tokens import CeoDistributionTokenRegistry   # repo root
+from message_schema import Message                                  # repo root
 
 logger = logging.getLogger("finance_token_manager")
 
-# ─── Default token allocations (Finance sets these) ───────────────────────────
+# ── Default starting allocations (Finance sets these) ────────────────────────
 
 DEFAULT_ALLOCATIONS: Dict[str, int] = {
-    "CEO":        30,
-    "PM":         25,
+    "CEO":         30,
+    "PM":          25,
     "Engineering": 20,
-    "Marketing":  15,
-    "HR":         10,
-    "Sales":      10,
-    "Finance":    10,
-    "UI":         10,
+    "Marketing":   15,
+    "HR":          10,
+    "Sales":       10,
+    "Finance":     10,
+    "UI":          10,
 }
 
-# How many tokens Finance grants on a top-up request by default
 DEFAULT_TOPUP_AMOUNT = 10
 
-# Scenarios Finance manages
-STANDARD_SCENARIO    = "STANDARD_DELEGATION"
-BROADCAST_SCENARIO   = "EXECUTIVE_BROADCAST"
+STANDARD_SCENARIO  = "STANDARD_DELEGATION"
+BROADCAST_SCENARIO = "EXECUTIVE_BROADCAST"
 
 
-# ─── Token request record ─────────────────────────────────────────────────────
+# ── Token request record ──────────────────────────────────────────────────────
 
 @dataclass
 class TokenRequest:
@@ -52,22 +51,27 @@ class TokenRequest:
     scenario_id: str
     requested_amount: int
     reason: str
-    requested_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    requested_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     status: str = "pending"          # pending | approved | denied
     approved_amount: int = 0
     decided_at: Optional[str] = None
     ceo_notified: bool = False
 
 
-# ─── Finance Token Manager ────────────────────────────────────────────────────
+# ── Finance Token Manager ─────────────────────────────────────────────────────
 
 class FinanceTokenManager:
     """
     Finance (CFO) owns token issuance and top-up approvals.
 
+    Wraps CeoDistributionTokenRegistry but uses Finance as the acting executive
+    so Finance — not CEO — is the minting authority.
+
     Usage:
         manager = FinanceTokenManager(router_client=client)
-        manager.initialize_registry()        # mint and distribute starting tokens
+        manager.initialize_registry()        # mint + distribute starting tokens
         manager.handle_topup_request(...)    # called when an agent runs out
     """
 
@@ -77,22 +81,21 @@ class FinanceTokenManager:
         executive_name: str = "CEO",
         cfo_name: str = "Finance",
     ):
-        self.router_client = router_client
-        self.executive_name = executive_name
-        self.cfo_name = cfo_name
+        self.router_client  = router_client
+        self.executive_name = executive_name   # CEO receives FYI notifications
+        self.cfo_name       = cfo_name         # Finance is the acting authority
 
-        # Finance acts as the minting authority by wrapping CEO registry
-        # with Finance as the acting executive for token ops
+        # Finance acts as the minting executive for the registry
         self.registry = CeoDistributionTokenRegistry(executive_name=cfo_name)
 
-        self._lock = threading.Lock()
+        self._lock: threading.Lock = threading.Lock()
         self._requests: List[TokenRequest] = []
 
-    # ─── Setup ────────────────────────────────────────────────────────────────
+    # ── Setup ─────────────────────────────────────────────────────────────────
 
     def initialize_registry(self) -> None:
         """
-        Register scenarios and distribute starting token balances to all agents.
+        Register scenarios and distribute starting token balances.
         Called once at Finance agent startup.
         """
         # Register scenarios
@@ -107,7 +110,7 @@ class FinanceTokenManager:
             acting_executive=self.cfo_name,
         )
 
-        # Mint total supply then distribute to each agent
+        # Mint total standard supply into Finance's account
         total_standard = sum(DEFAULT_ALLOCATIONS.values())
         self.registry.mint(
             STANDARD_SCENARIO,
@@ -116,7 +119,7 @@ class FinanceTokenManager:
             acting_executive=self.cfo_name,
         )
 
-        # Broadcast: only CEO and PM get these
+        # Mint broadcast supply
         self.registry.mint(
             BROADCAST_SCENARIO,
             quantity=15,
@@ -127,7 +130,7 @@ class FinanceTokenManager:
         # Distribute standard tokens to each agent
         for agent, amount in DEFAULT_ALLOCATIONS.items():
             if agent == self.cfo_name:
-                continue  # Finance keeps its own share already
+                continue  # Finance already holds its own share
             self.registry.transfer(
                 STANDARD_SCENARIO,
                 from_holder=self.cfo_name,
@@ -136,7 +139,7 @@ class FinanceTokenManager:
                 acting_executive=self.cfo_name,
             )
 
-        # Distribute broadcast tokens
+        # Distribute broadcast tokens (CEO + PM only per README spec)
         self.registry.transfer(
             BROADCAST_SCENARIO,
             from_holder=self.cfo_name,
@@ -153,14 +156,13 @@ class FinanceTokenManager:
         )
 
         logger.info(
-            "[FinanceTokenManager] Registry initialized. "
-            "Standard supply: %d tokens distributed across %d agents.",
-            total_standard,
-            len(DEFAULT_ALLOCATIONS),
+            "[FinanceTokenManager] Registry initialized — %d standard tokens "
+            "distributed across %d agents.",
+            total_standard, len(DEFAULT_ALLOCATIONS),
         )
         self._log_balances()
 
-    # ─── Token request handling ───────────────────────────────────────────────
+    # ── Token request handling ────────────────────────────────────────────────
 
     def handle_topup_request(
         self,
@@ -170,14 +172,12 @@ class FinanceTokenManager:
         reason: str = "",
     ) -> Dict[str, Any]:
         """
-        Called when an agent's tokens are maxed out and they need more.
+        Called when an agent's tokens are maxed out.
 
         Flow:
           1. Finance (CFO) evaluates and approves/denies
           2. If approved, mint new tokens and transfer to the agent
-          3. Notify CEO (FYI only — approval authority is Finance/CFO)
-
-        Returns a result dict with status and approved_amount.
+          3. Notify CEO (FYI only — approval comes from Finance/CFO)
         """
         req = TokenRequest(
             agent_name=agent_name,
@@ -185,21 +185,19 @@ class FinanceTokenManager:
             requested_amount=requested_amount,
             reason=reason or f"{agent_name} token balance exhausted for {scenario_id}",
         )
-
         with self._lock:
             self._requests.append(req)
 
         logger.info(
-            "[FinanceTokenManager] Token top-up request from %s: %d tokens for %s",
+            "[FinanceTokenManager] Top-up request from %s: %d tokens for %s",
             agent_name, requested_amount, scenario_id,
         )
 
-        # CFO decision logic
         approved, approved_amount, denial_reason = self._cfo_evaluate(req)
 
-        req.status = "approved" if approved else "denied"
+        req.status          = "approved" if approved else "denied"
         req.approved_amount = approved_amount
-        req.decided_at = datetime.now(timezone.utc).isoformat()
+        req.decided_at      = datetime.now(timezone.utc).isoformat()
 
         if approved:
             self._mint_and_transfer(agent_name, scenario_id, approved_amount)
@@ -213,52 +211,45 @@ class FinanceTokenManager:
                 agent_name, denial_reason,
             )
 
-        # Notify CEO (FYI — no approval needed from CEO)
+        # Notify CEO — FYI only, no approval needed from CEO
         self._notify_ceo(req, denial_reason)
 
         return {
-            "status": req.status,
-            "agent": agent_name,
-            "scenario_id": scenario_id,
+            "status":           req.status,
+            "agent":            agent_name,
+            "scenario_id":      scenario_id,
             "requested_amount": requested_amount,
-            "approved_amount": approved_amount,
-            "decided_at": req.decided_at,
-            "denial_reason": denial_reason if not approved else None,
-            "ceo_notified": req.ceo_notified,
+            "approved_amount":  approved_amount,
+            "decided_at":       req.decided_at,
+            "denial_reason":    denial_reason if not approved else None,
+            "ceo_notified":     req.ceo_notified,
         }
 
     def _cfo_evaluate(self, req: TokenRequest) -> Tuple[bool, int, str]:
-        """
-        CFO evaluation logic.
-        Returns (approved, approved_amount, denial_reason).
-        """
-        # Deny unknown scenarios
+        """CFO decision logic. Returns (approved, approved_amount, denial_reason)."""
         if not self.registry.is_registered(req.scenario_id):
             return False, 0, f"Unknown scenario: {req.scenario_id}"
 
-        # Cap top-up at DEFAULT_TOPUP_AMOUNT unless explicitly requesting less
         approved_amount = min(req.requested_amount, DEFAULT_TOPUP_AMOUNT)
 
-        # Check Finance has enough supply to give
+        # Ensure Finance has enough supply; mint more if needed
         finance_balance = self.registry.balance(self.cfo_name, req.scenario_id)
         if finance_balance < approved_amount:
-            # Mint more supply if needed (CFO can always issue new tokens)
             shortfall = approved_amount - finance_balance
             self.registry.mint(
                 req.scenario_id,
-                quantity=shortfall + DEFAULT_TOPUP_AMOUNT,  # buffer
+                quantity=shortfall + DEFAULT_TOPUP_AMOUNT,
                 holder=self.cfo_name,
                 acting_executive=self.cfo_name,
             )
             logger.info(
-                "[FinanceTokenManager] CFO minted %d additional tokens for %s supply.",
-                shortfall + DEFAULT_TOPUP_AMOUNT, req.scenario_id,
+                "[FinanceTokenManager] CFO minted %d additional tokens for supply.",
+                shortfall + DEFAULT_TOPUP_AMOUNT,
             )
 
         return True, approved_amount, ""
 
     def _mint_and_transfer(self, agent_name: str, scenario_id: str, amount: int) -> None:
-        """Transfer approved tokens from Finance to the requesting agent."""
         self.registry.transfer(
             scenario_id,
             from_holder=self.cfo_name,
@@ -268,32 +259,27 @@ class FinanceTokenManager:
         )
 
     def _notify_ceo(self, req: TokenRequest, denial_reason: str = "") -> None:
-        """
-        Send a FYI message to CEO about the token top-up decision.
-        Approval authority is Finance/CFO — this is informational only.
-        """
+        """Send FYI message to CEO about the token top-up decision."""
         if not self.router_client:
             logger.debug("[FinanceTokenManager] No router client; CEO notification skipped.")
             return
-
-        payload = {
-            "event":            "TOKEN_TOPUP_DECISION",
-            "agent":            req.agent_name,
-            "scenario_id":      req.scenario_id,
-            "requested_amount": req.requested_amount,
-            "approved_amount":  req.approved_amount,
-            "status":           req.status,
-            "decided_by":       f"{self.cfo_name} (CFO)",
-            "note":             "FYI only — approval authority is Finance/CFO, not CEO.",
-            "denial_reason":    denial_reason or None,
-            "decided_at":       req.decided_at,
-        }
 
         msg = Message.create(
             sender=self.cfo_name,
             recipient=self.executive_name,
             task_type="TOKEN_TOPUP_NOTIFICATION",
-            payload=payload,
+            payload={
+                "event":            "TOKEN_TOPUP_DECISION",
+                "agent":            req.agent_name,
+                "scenario_id":      req.scenario_id,
+                "requested_amount": req.requested_amount,
+                "approved_amount":  req.approved_amount,
+                "status":           req.status,
+                "decided_by":       f"{self.cfo_name} (CFO)",
+                "note":             "FYI only — approval authority is Finance/CFO, not CEO.",
+                "denial_reason":    denial_reason or None,
+                "decided_at":       req.decided_at,
+            },
             context={"fyi": True},
         )
 
@@ -305,42 +291,36 @@ class FinanceTokenManager:
                 req.agent_name,
             )
         except Exception as exc:
-            logger.warning(
-                "[FinanceTokenManager] Failed to notify CEO: %s", exc
-            )
+            logger.warning("[FinanceTokenManager] Failed to notify CEO: %s", exc)
 
-    # ─── Convenience helpers ──────────────────────────────────────────────────
+    # ── Convenience helpers ───────────────────────────────────────────────────
 
     def get_balance(self, agent_name: str, scenario_id: str = STANDARD_SCENARIO) -> int:
-        """Check an agent's current token balance."""
         return self.registry.balance(agent_name, scenario_id)
 
     def try_consume(self, agent_name: str, scenario_id: str) -> bool:
         """
-        Attempt to consume a token for a send.
-        If the balance is exhausted, automatically request a top-up from Finance.
-        Returns True if the send may proceed.
+        Consume a token. If the balance is empty, automatically request a
+        top-up from Finance before retrying.
         """
-        consumed = self.registry.try_consume(agent_name, scenario_id)
-        if not consumed:
-            logger.warning(
-                "[FinanceTokenManager] %s is out of tokens for %s — requesting top-up.",
-                agent_name, scenario_id,
-            )
-            result = self.handle_topup_request(
-                agent_name=agent_name,
-                scenario_id=scenario_id,
-                requested_amount=DEFAULT_TOPUP_AMOUNT,
-                reason=f"{agent_name} token balance exhausted for {scenario_id}",
-            )
-            if result["status"] == "approved" and result["approved_amount"] > 0:
-                # Try consuming again with new balance
-                return self.registry.try_consume(agent_name, scenario_id)
-            return False
-        return True
+        if self.registry.try_consume(agent_name, scenario_id):
+            return True
+
+        logger.warning(
+            "[FinanceTokenManager] %s is out of tokens for %s — requesting top-up.",
+            agent_name, scenario_id,
+        )
+        result = self.handle_topup_request(
+            agent_name=agent_name,
+            scenario_id=scenario_id,
+            requested_amount=DEFAULT_TOPUP_AMOUNT,
+            reason=f"{agent_name} token balance exhausted for {scenario_id}",
+        )
+        if result["status"] == "approved" and result["approved_amount"] > 0:
+            return self.registry.try_consume(agent_name, scenario_id)
+        return False
 
     def snapshot(self) -> Dict[str, Any]:
-        """Return a snapshot of all balances and request history."""
         balances = self.registry.snapshot_balances()
         return {
             "balances": {
@@ -363,6 +343,5 @@ class FinanceTokenManager:
         }
 
     def _log_balances(self) -> None:
-        snap = self.registry.snapshot_balances()
-        for (holder, scenario), amount in snap.items():
+        for (holder, scenario), amount in self.registry.snapshot_balances().items():
             logger.debug("  Balance  %-20s %-30s = %d", holder, scenario, amount)
