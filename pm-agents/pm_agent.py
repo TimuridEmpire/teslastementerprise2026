@@ -2,6 +2,8 @@ import os
 from typing import Optional, Dict, Any
 
 from agent_transport import (
+    AGENT_CEO,
+    AGENT_HR,
     AGENT_MARKETING,
     ack,
     drain_mailbox,
@@ -21,6 +23,7 @@ from pm_tools import (
 )
 from pm_storage import storage
 from artifact_writer import render_roadmap_md, write_artifact, publish_artifact
+from agent_backlog import AgentBacklog
 from agent_logger import get_agent_logger, log_inter_agent_message
 
 
@@ -29,6 +32,7 @@ class PMAgent:
         self.name = name
         self._active_project: Optional[Dict[str, Any]] = None
         self.logger = get_agent_logger(self.name)
+        self.backlog = AgentBacklog()
 
     # ------------------------------------------------------------------
     # Main poll entry-point
@@ -58,12 +62,15 @@ class PMAgent:
     def _process(self, m: Dict[str, Any], *, use_router: bool) -> None:
         """Dispatch a single message and ack/nack when done."""
         log_inter_agent_message(self.logger, m, direction="RECEIVING")
+        self.backlog.record_interaction(m)
         try:
             task = m.get("task_type")
             if task == "DEFINE_Q2_ROADMAP":
                 self.handle_define_roadmap(m)
             elif task == "REQUEST_FEATURES":
                 self.handle_feature_request(m)
+            elif task == "CEO_STRATEGY_DIRECTIVE":
+                self.handle_ceo_strategy_directive(m)
             else:
                 self.logger.warning(f"PMAgent: unhandled task_type '{task}'")
 
@@ -195,6 +202,7 @@ class PMAgent:
                 payload=route["payload"],
             )
             log_inter_agent_message(self.logger, out_msg, direction="SENDING")
+            self.backlog.record_interaction(out_msg)
             submit(out_msg)
 
         self.logger.info(f"PMAgent: sent {len(routes)} downstream messages")
@@ -233,4 +241,51 @@ class PMAgent:
             payload={"features": prioritized},
         )
         log_inter_agent_message(self.logger, response_msg, direction="SENDING")
+        self.backlog.record_interaction(response_msg)
         submit(response_msg)
+
+    def _derive_staffing_roles(self, strategy: str) -> list[str]:
+        base_roles = ["Router Observability Engineer", "Product Operations Analyst"]
+        text = strategy.lower()
+        if "marketing" in text or "campaign" in text:
+            base_roles.append("Campaign Operations Specialist")
+        if "retention" in text or "customer" in text:
+            base_roles.append("Customer Success Specialist")
+        return base_roles
+
+    def handle_ceo_strategy_directive(self, msg):
+        self.logger.info(f"PMAgent received CEO strategy directive: {msg.get('id')}")
+        payload = msg.get("payload", {})
+        strategy = str(payload.get("strategy") or "")
+        project_id = self._resolve_project_id(msg)
+        requested_roles = self._derive_staffing_roles(strategy)
+
+        hr_msg = Message.create(
+            sender=self.name,
+            recipient=AGENT_HR,
+            task_type="TALENT_REALLOCATION",
+            context={"project_id": project_id, "source_task_type": "CEO_STRATEGY_DIRECTIVE"},
+            payload={
+                "task": "Staff strategy execution based on CEO directive.",
+                "strategy": strategy,
+                "requested_roles": requested_roles,
+                "requested_by": "PM",
+            },
+        )
+        log_inter_agent_message(self.logger, hr_msg, direction="SENDING")
+        self.backlog.record_interaction(hr_msg)
+        submit(hr_msg)
+
+        ceo_report = Message.create(
+            sender=self.name,
+            recipient=AGENT_CEO,
+            task_type="PM_REPORT",
+            context={"project_id": project_id, "source_task_type": "CEO_STRATEGY_DIRECTIVE"},
+            payload={
+                "status": "staffing_routed_to_hr",
+                "requested_roles": requested_roles,
+            },
+        )
+        log_inter_agent_message(self.logger, ceo_report, direction="SENDING")
+        self.backlog.record_interaction(ceo_report)
+        submit(ceo_report)

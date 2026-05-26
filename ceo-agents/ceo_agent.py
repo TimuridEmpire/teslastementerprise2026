@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import requests
 from agent_logger import get_agent_logger
+from agent_backlog import AgentBacklog
 from enterprise_router.agent_artifacts import write_agent_artifact
 from enterprise_router_client import EnterpriseRouterClient
 from message_schema import Message
@@ -34,6 +35,7 @@ class CeoAgent(ThreadSafeAgentMixin):
         super().__init__()
         self.name = name
         self.logger = get_agent_logger(self.name)
+        self.backlog = AgentBacklog()
         self.distribution_registry = distribution_registry
         self.legal_compliance_subagent = "Legal Compliance Agent"
         self.children_nearby_detected = False
@@ -240,9 +242,17 @@ class CeoAgent(ThreadSafeAgentMixin):
                         "ceo_request": message,
                         "cycle_id": result["id"],
                     },
+                    source_task_type="CEO_REASONING_LOOP",
                 )
                 if artifact:
                     result["artifact"] = artifact
+                self._delegate_strategy_to_pm_unlocked(
+                    strategy_text=str(result.get("strategic_decision") or ""),
+                    cycle_context={
+                        "cycle_id": result["id"],
+                        "source_task_type": "CEO_REASONING_LOOP",
+                    },
+                )
                 return result
             except Exception as exc:
                 self._record_failure_unlocked()
@@ -389,6 +399,11 @@ class CeoAgent(ThreadSafeAgentMixin):
                     "source": "oversee_company",
                     "departments": list(subordinate_agents),
                 },
+                source_task_type="CEO_STRATEGIC_CYCLE",
+            )
+            self._delegate_strategy_to_pm_unlocked(
+                strategy_text=str(decision),
+                cycle_context={"source_task_type": "CEO_STRATEGIC_CYCLE"},
             )
             return decision
 
@@ -515,6 +530,7 @@ class CeoAgent(ThreadSafeAgentMixin):
         body: str,
         artifact_type: str = "strategy",
         metadata: Optional[Dict[str, Any]] = None,
+        source_task_type: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         try:
             record = write_agent_artifact(
@@ -523,12 +539,77 @@ class CeoAgent(ThreadSafeAgentMixin):
                 body=body,
                 artifact_type=artifact_type,
                 metadata=metadata,
+                source_task_type=source_task_type,
             )
             self.logger.info("Wrote CEO artifact to %s", record.get("path"))
+            self._emit_artifact_router_event_unlocked(record)
             return record
         except Exception as exc:
             self.logger.warning("Failed to write CEO artifact: %s", exc)
             return None
+
+    def _emit_artifact_router_event_unlocked(self, record: Dict[str, Any]) -> None:
+        """
+        Best-effort schema envelope so UI/message observers can track new artifacts
+        through the same router lifecycle used for agent communication.
+        """
+        try:
+            self.send_router_envelope(
+                recipient="MANAGER",
+                task_type="AGENT_ARTIFACT_READY",
+                context={"artifact_event": True, "agent_name": self.name},
+                payload={
+                    "artifact_id": record.get("artifact_id"),
+                    "artifact_type": record.get("artifact_type"),
+                    "title": record.get("title"),
+                    "filename": record.get("filename"),
+                    "created_at": record.get("created_at"),
+                    "source_task_type": record.get("source_task_type"),
+                    "metadata": record.get("metadata") if isinstance(record.get("metadata"), dict) else {},
+                },
+                urgency="normal",
+            )
+        except Exception as exc:
+            # Artifact persistence is the hard requirement; router emit is additive.
+            self.logger.warning("Unable to publish artifact event to router: %s", exc)
+
+    def _delegate_strategy_to_pm_unlocked(
+        self,
+        *,
+        strategy_text: str,
+        cycle_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Send CEO strategy to PM through enterprise_router so PM can derive
+        staffing/roadmap actions and route hiring asks to HR.
+        """
+        payload = {
+            "strategy": strategy_text,
+            "instruction": (
+                "Translate this CEO strategy into a plan, identify staffing needs, "
+                "and route hiring/reallocation requests to HR."
+            ),
+        }
+        context = dict(cycle_context or {})
+        context["strategy_origin"] = "CEO"
+        try:
+            envelope = Message.create(
+                sender=self.name,
+                recipient="PM",
+                task_type="CEO_STRATEGY_DIRECTIVE",
+                context=context,
+                payload=payload,
+            ).to_dict()
+            self.backlog.record_interaction(envelope)
+            self.send_router_envelope(
+                recipient="PM",
+                task_type="CEO_STRATEGY_DIRECTIVE",
+                payload=payload,
+                context=context,
+                urgency="high",
+            )
+        except Exception as exc:
+            self.logger.warning("Unable to deliver strategy directive to PM: %s", exc)
 
     def _metrics_snapshot_unlocked(self) -> Dict[str, Any]:
         tasks = self.metrics.get("tasks_per_agent")
