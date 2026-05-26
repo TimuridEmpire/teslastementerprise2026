@@ -102,8 +102,8 @@ class RecoverableError(Exception):
     the message and wait for HR to replenish budgets."""
     pass
 
-#TODO: Clarify internal engineering agent tokens vs the universal ceo tokens and make sure the naming makes it clear which is which. 
-# The engineering agent tokens are meant to be a proxy for how much work the engineering agents can do before needing to ask HR for more, 
+#TODO: Clarify internal engineering agent tokens vs the universal ceo tokens and make sure the naming makes it clear which is which.
+# The engineering agent tokens are meant to be a proxy for how much work the engineering agents can do before needing to ask HR for more,
 # while the CEO tokens are meant to be a proxy for how much work the CEO can do before needing to ask the board for more. '
 # Right now the engineering agent tokens are just called "token budgets" but maybe they should be called "engineering agent token budgets"
 #  or something to make it more clear that they are separate from the CEO tokens.
@@ -169,8 +169,8 @@ class TokenBudget:
 # ---------------------------------------------------------------------------
 
 class FullSystem:
-    # TODO: This class is a work in progress and not fully integrated yet. 
-    # The idea is to have a single object that encapsulates the entire system state and logic, including the agents, token budgets, and helper functions for contract validation and plan generation. 
+    # TODO: This class is a work in progress and not fully integrated yet.
+    # The idea is to have a single object that encapsulates the entire system state and logic, including the agents, token budgets, and helper functions for contract validation and plan generation.
     # This way we can avoid using global variables and have a cleaner interface for the main execution flow.
     # Make sure to have a description of this class and its purpose in the docstring once it's more fully fleshed out.
     def __init__(self, db=None):
