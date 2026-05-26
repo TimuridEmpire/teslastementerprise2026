@@ -1,7 +1,7 @@
 import json
 import os
-from datetime import datetime, timezone
-from llm_provider import llm_json_array
+from datetime import datetime, timezone, timedelta
+from llm_provider import llm_json_array, llm_json_object
 from pm_storage import storage
 from agent_transport import AGENT_ENGINEERING, AGENT_MARKETING
 
@@ -120,7 +120,72 @@ def generate_acceptance_criteria(feature_name, goal=""):
     return cleaned
 
 
-def decide_routes(*, product, goal, prioritized, project_id, artifact_path=None):
+def generate_text_spec(feature_name, goal="", acceptance_criteria=None):
+    """Produce a short written specification string for a feature.
+
+    This REPLACES the old `spec_link` field from Example 2 of the requirements
+    doc: per the engineering lead, the PM -> Engineering message now carries a
+    self-contained, written-out spec instead of a URL. Uses the LLM when one is
+    available and ALWAYS falls back to a deterministic template, so the PM agent
+    never errors just because no model is running. Same LLM+fallback pattern as
+    generate_acceptance_criteria() above.
+    """
+    acceptance_criteria = acceptance_criteria or []
+    criteria_block = "\n".join(f"- {c}" for c in acceptance_criteria)
+    prompt = (
+        f"Write a short implementation specification (3-5 sentences) for the "
+        f"software feature '{feature_name}'"
+        + (f" which supports the goal: {goal}." if goal else ".")
+        + " Describe what to build and the expected behavior. "
+        "Respond ONLY with a JSON object of the form "
+        '{"spec": "<the specification text>"}.'
+    )
+    result = llm_json_object(prompt)
+    spec_text = ""
+    if isinstance(result, dict):
+        spec_text = str(result.get("spec", "")).strip()
+    if not spec_text:
+        spec_text = (
+            f"Implement the '{feature_name}' feature"
+            + (f" in support of the goal: {goal}." if goal else ".")
+            + " It should be a working, tested component that satisfies the "
+            "acceptance criteria below and integrates with the existing product."
+        )
+    if criteria_block:
+        spec_text = f"{spec_text}\n\nAcceptance criteria:\n{criteria_block}"
+    return spec_text
+
+
+def derive_target_release(context=None):
+    """Best-effort target release date (ISO yyyy-mm-dd) for Engineering.
+
+    Example 2 carries `target_release` in context, so PM must supply one even
+    though the CEO's DEFINE_Q2_ROADMAP message (Example 1) only gives quarter/
+    year. Order of preference:
+      1. An explicit target_release the CEO included in the inbound context.
+      2. The last day of the quarter named in context (e.g. "Q2" -> 06-30).
+      3. A default ~45 days out, so there is always a concrete date.
+    """
+    context = context or {}
+    explicit = context.get("target_release")
+    if explicit:
+        return str(explicit)
+
+    quarter = str(context.get("quarter", "")).upper().strip()
+    year = context.get("year")
+    quarter_end = {"Q1": (3, 31), "Q2": (6, 30), "Q3": (9, 30), "Q4": (12, 31)}
+    if quarter in quarter_end and year:
+        month, day = quarter_end[quarter]
+        try:
+            return f"{int(year):04d}-{month:02d}-{day:02d}"
+        except (TypeError, ValueError):
+            pass
+
+    return (datetime.now(timezone.utc) + timedelta(days=45)).strftime("%Y-%m-%d")
+
+
+def decide_routes(*, product, goal, prioritized, project_id, artifact_path=None,
+                  target_release=None):
     """
     Decide which agents PM should message after defining a roadmap.
 
@@ -128,6 +193,9 @@ def decide_routes(*, product, goal, prioritized, project_id, artifact_path=None)
     Every task_type here must be one the recipient accepts (see the router's
     allowed_task_types): Marketing accepts LAUNCH_CAMPAIGN + PM_REPORT,
     Engineering accepts IMPLEMENT_FEATURE.
+
+    target_release: ISO date string put in the Engineering message context to
+    match Example 2. Pass derive_target_release(msg["context"]) from the handler.
     """
     must = prioritized.get("must", [])
     should = prioritized.get("should", [])
@@ -160,14 +228,27 @@ def decide_routes(*, product, goal, prioritized, project_id, artifact_path=None)
     # 3. Engineering: one IMPLEMENT_FEATURE per must-have feature.
     for idx, feature in enumerate(must, start=1):
         feature_name = feature.get("name") if isinstance(feature, dict) else str(feature)
+        criteria = generate_acceptance_criteria(feature_name, goal)
+
+        # Match Example 2's context: priority + target_release (plus our
+        # project_id for UI correlation). target_release is only added when we
+        # actually have one, so we never send an empty field.
+        eng_context = {"project_id": project_id, "priority": "high"}
+        if target_release:
+            eng_context["target_release"] = target_release
+
         routes.append({
             "recipient": AGENT_ENGINEERING,
             "task_type": "IMPLEMENT_FEATURE",
-            "context": {"project_id": project_id, "priority": "high"},
+            "context": eng_context,
             "payload": {
                 "feature_id": f"FT-{idx:03d}",
                 "feature_name": feature_name,
-                "acceptance_criteria": generate_acceptance_criteria(feature_name, goal),
+                # Written text spec, replacing Example 2's spec_link per the
+                # engineering lead. Field name "spec" is PENDING eng confirmation
+                # (fallback name discussed: "text_spec") -- change here if needed.
+                "spec": generate_text_spec(feature_name, goal, criteria),
+                "acceptance_criteria": criteria,
             },
         })
 
