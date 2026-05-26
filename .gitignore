@@ -36,6 +36,3 @@ website/.env.local.generated
 
 # Ignore the runtime audit log
 tesla_audit.jsonl
-graphify-out
-
-agents.md
