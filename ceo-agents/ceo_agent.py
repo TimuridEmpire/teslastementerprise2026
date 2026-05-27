@@ -702,6 +702,48 @@ class CeoAgent(ThreadSafeAgentMixin):
                 "metrics": self.get_metrics(),
             }
 
+        if task == "PM_REPORT":
+            report_summary = str(payload.get("status") or "pm_update")
+            self._write_strategy_artifact_unlocked(
+                title="CEO PM Delivery Update",
+                body=(
+                    "## PM Report\n\n"
+                    f"Status: {report_summary}\n\n"
+                    "## Payload\n\n"
+                    f"{payload}"
+                ),
+                artifact_type="status-update",
+                metadata={"source_task_type": "PM_REPORT"},
+                source_task_type="PM_REPORT",
+            )
+            return {
+                "ok": True,
+                "agent": self.name,
+                "task_type": task,
+                "status": report_summary,
+            }
+
+        if task == "FEATURE_RESPONSE":
+            eng_status = str(payload.get("status") or "unknown")
+            self._write_strategy_artifact_unlocked(
+                title="CEO Engineering Delivery Update",
+                body=(
+                    "## Engineering Feature Response\n\n"
+                    f"Status: {eng_status}\n\n"
+                    "## Payload\n\n"
+                    f"{payload}"
+                ),
+                artifact_type="status-update",
+                metadata={"source_task_type": "FEATURE_RESPONSE"},
+                source_task_type="FEATURE_RESPONSE",
+            )
+            return {
+                "ok": True,
+                "agent": self.name,
+                "task_type": task,
+                "engineering_status": eng_status,
+            }
+
         if task == "MINT_TOKENS":
             if not self.distribution_registry:
                 raise RuntimeError("CeoAgent has no distribution_registry attached.")
