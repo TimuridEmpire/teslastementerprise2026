@@ -67,7 +67,39 @@ Use this flow to run the router, all implemented agent workers, and the website 
 
 The implemented runtime workers are `CEO`, `PM`, `Marketing`, `HR`, `Engineering`, and `Strategic Advisor`. `Sales` and `Finance` are registered with the router/website, but this codebase does not currently include worker implementations for them, so `run_agents.py` reports them as missing and skips them.
 
-1. Start the Enterprise Router API in one terminal:
+#### Prerequisites
+
+- Python dependencies installed for this repo.
+- Node dependencies installed for `website`.
+- Ollama installed for the CEO's local LLM calls.
+- The `mistral` Ollama model pulled locally.
+- Optional for full Engineering mode: `crewai` and `crewai_tools`. If they are missing, Engineering starts in deterministic light-demo mode.
+
+Install Python dependencies needed by the Engineering full mode:
+
+```powershell
+cd "<project-root>"
+python -m pip install crewai crewai_tools
+```
+
+Install Ollama from `https://ollama.com/download`, then close and reopen your terminal so `ollama` is on PATH.
+
+1. Start Ollama in its own terminal:
+
+```powershell
+ollama serve
+```
+
+In another terminal, pull the CEO model and verify Ollama is reachable:
+
+```powershell
+ollama pull mistral
+Invoke-WebRequest -UseBasicParsing http://localhost:11434/api/tags
+```
+
+If `ollama` is not recognized, Ollama is not installed or your terminal has not picked up the updated PATH.
+
+2. Start the Enterprise Router API in a separate terminal:
 
 ```powershell
 cd "<router-repo>"
@@ -78,7 +110,7 @@ $env:ENTERPRISE_ROUTER_PORT="8000"
 python -m enterprise_router.api
 ```
 
-2. Confirm the router is reachable from a second terminal:
+3. Confirm the router is reachable:
 
 ```powershell
 Invoke-WebRequest -UseBasicParsing http://localhost:8000/health
@@ -90,7 +122,7 @@ A healthy local router returns JSON similar to:
 {"status":"ok","backend":"sqlite"}
 ```
 
-3. Register the default agents and write local key files:
+4. Register the default agents and write local key files:
 
 ```powershell
 cd "<project-root>"
@@ -108,7 +140,7 @@ This writes local-only secret files:
 
 These files are ignored by Git and should not be committed.
 
-4. Load the generated worker keys:
+5. Load the generated worker keys:
 
 ```powershell
 cd "<project-root>"
@@ -122,7 +154,13 @@ cd "<project-root>"
 call .router_keys.cmd
 ```
 
-5. Start the implemented agent workers:
+6. Check which workers can start:
+
+```powershell
+python .\run_agents.py --agents all --list
+```
+
+7. Start the implemented agent workers:
 
 ```powershell
 python .\run_agents.py --agents all
@@ -136,7 +174,7 @@ Current local worker behavior:
 - `Sales` and `Finance` are skipped because this codebase does not yet include worker implementations for them.
 - PM and Marketing use local file storage by default (`data/pm_storage.json`) so local MongoDB is not required. Set `PM_STORAGE_BACKEND=mongo` only if you intentionally want PM/Marketing domain storage in Mongo.
 
-6. Start the website in another terminal:
+8. Start the website in another terminal:
 
 ```powershell
 cd "<project-root>\website"
@@ -146,7 +184,7 @@ npm run dev
 
 Open the Next.js URL from the terminal, usually `http://localhost:3000`.
 
-7. Start the demo workflow from the website:
+9. Start the demo workflow from the website:
 
 - If onboarding appears, complete it. The final onboarding step queues a real `CEO_REASONING_LOOP` message through the Enterprise Router.
 - If the app opens directly to `/dashboard`, use `/chat` or an agent page to send an instruction to CEO. CEO-targeted website instructions use `CEO_REASONING_LOOP`.
@@ -158,6 +196,20 @@ python .\scripts\initiate_router_workflow.py
 ```
 
 This queues starter messages as CEO. Without onboarding/chat/this seed, workers mostly poll empty queues.
+
+10. Verify that the live demo is working:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing "http://localhost:8000/audit?limit=50" -Headers @{ "X-Admin-Secret" = "dev-admin-secret" }
+Invoke-WebRequest -UseBasicParsing "http://localhost:8000/artifacts?limit=10" -Headers @{ "X-Admin-Secret" = "dev-admin-secret" }
+```
+
+In the website, check:
+
+- `/dashboard`: `Latest agent output` should show a live markdown artifact.
+- `/observability`: audit count and throughput should update.
+- `/agents/ceo`: CEO output should contain a real strategic decision when Ollama is running.
+- `/agents/product`, `/agents/hr`, `/agents/engineering`: outputs appear after those workers process routed messages.
 
 What you should see:
 
@@ -239,6 +291,9 @@ If you already skipped onboarding and the dashboard opens immediately, send a CE
 
 Common local issues:
 
+- `ollama is not recognized`: install Ollama from `https://ollama.com/download`, then restart the terminal.
+- `Strategic Link Error` or `localhost:11434` connection refused in CEO artifacts: Ollama is not running. Start `ollama serve` and confirm `Invoke-WebRequest -UseBasicParsing http://localhost:11434/api/tags` returns JSON.
+- CEO output says the `mistral` model is missing: run `ollama pull mistral`.
 - `403 Invalid API key`: the website or agent process is using a stale key. Re-run `scripts/setup_local_runtime.py --write-website-env`, reload `.router_keys.ps1` or `.router_keys.cmd`, and restart the affected process.
 - `403 Task type 'MANAGER_INTERVENTION' is not allowed`: the agent was registered with an old allowlist. Re-run `scripts/setup_local_runtime.py --write-website-env` against the running router.
 - `WinError 10048` on port `8000`: another router is already running on that port. Stop it or use a different `ENTERPRISE_ROUTER_PORT` and update `NEXT_PUBLIC_API_URL` / `ENTERPRISE_ROUTER_URL` to match.

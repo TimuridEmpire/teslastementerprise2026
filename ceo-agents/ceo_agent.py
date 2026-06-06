@@ -4,6 +4,7 @@
 
 # Import the logger from your custom logging file
 import datetime
+import os
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -41,10 +42,13 @@ class CeoAgent(ThreadSafeAgentMixin):
         self.children_nearby_detected = False
         self.enforce_local_audio_only = True
         self.disallow_external_audio_storage = True
-        # Ollama API endpoints for Mistral.
-        self.ollama_chat_url = "http://localhost:11434/api/chat"
-        self.ollama_generate_url = "http://localhost:11434/api/generate"
-        self.model_name = "mistral"
+        # Ollama API endpoints for the local language model.
+        ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+        self.ollama_chat_url = f"{ollama_base_url}/api/chat"
+        self.ollama_generate_url = f"{ollama_base_url}/api/generate"
+        self.model_name = os.getenv("OLLAMA_MODEL", "mistral")
+        self.ollama_generate_timeout_s = float(os.getenv("OLLAMA_GENERATE_TIMEOUT_S", "120"))
+        self.ollama_chat_timeout_s = float(os.getenv("OLLAMA_CHAT_TIMEOUT_S", "120"))
         self.chat_history: List[Dict[str, str]] = []
         self.metrics: Dict[str, Any] = {
             "tasks_per_agent": {},
@@ -333,14 +337,18 @@ class CeoAgent(ThreadSafeAgentMixin):
             "stream": False,
         }
         try:
-            response = requests.post(self.ollama_generate_url, json=payload, timeout=20)
+            response = requests.post(
+                self.ollama_generate_url,
+                json=payload,
+                timeout=self.ollama_generate_timeout_s,
+            )
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
                 return "Strategic Link Error: invalid response payload from Mistral."
             return data.get("response")
         except requests.RequestException as e:
-            return f"Strategic Link Error: Ensure Docker is running. {e}"
+            return self._format_ollama_error_unlocked(e)
         except ValueError as e:
             return f"Strategic Link Error: invalid JSON payload returned. {e}"
 
@@ -352,7 +360,11 @@ class CeoAgent(ThreadSafeAgentMixin):
             "stream": False,
         }
         try:
-            response = requests.post(self.ollama_chat_url, json=payload, timeout=25)
+            response = requests.post(
+                self.ollama_chat_url,
+                json=payload,
+                timeout=self.ollama_chat_timeout_s,
+            )
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
@@ -367,13 +379,26 @@ class CeoAgent(ThreadSafeAgentMixin):
             self.chat_history.append({"role": "assistant", "content": assistant_reply})
             return assistant_reply
         except requests.RequestException as e:
-            err = f"Strategic Link Error: Ensure Docker is running. {e}"
+            err = self._format_ollama_error_unlocked(e)
             self.chat_history.append({"role": "assistant", "content": err})
             return err
         except ValueError as e:
             err = f"Strategic Link Error: invalid JSON payload returned. {e}"
             self.chat_history.append({"role": "assistant", "content": err})
             return err
+
+    def _format_ollama_error_unlocked(self, exc: requests.RequestException) -> str:
+        """Return an actionable Ollama error without leaking noisy stack traces into artifacts."""
+        response = getattr(exc, "response", None)
+        details = ""
+        if response is not None:
+            body = (response.text or "").strip()
+            if body:
+                details = f" Response body: {body[:500]}"
+        return (
+            "Strategic Link Error: Ollama request failed. Confirm Ollama is running, "
+            f"model '{self.model_name}' is installed, and the model has finished loading. {exc}{details}"
+        )
 
     def oversee_company(self, subordinate_agents, context: Optional[Dict[str, Any]] = None):
         """The main workflow loop."""
