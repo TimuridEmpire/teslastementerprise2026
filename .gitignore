@@ -36,3 +36,8 @@ website/.env.local.generated
 
 # Ignore the runtime audit log
 tesla_audit.jsonl
+agents.md
+graphify-out/
+
+# Local Enterprise Router SQLite state
+enterprise_router_demo.db

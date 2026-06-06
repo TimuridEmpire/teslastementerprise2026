@@ -1,8 +1,10 @@
+import json
 import os
 from typing import Optional, Dict, Any
 
 from agent_transport import (
     AGENT_CEO,
+    AGENT_ENGINEERING,
     AGENT_HR,
     AGENT_MARKETING,
     ack,
@@ -76,6 +78,8 @@ class PMAgent:
                 self.handle_feature_request(m)
             elif task == "CEO_STRATEGY_DIRECTIVE":
                 self.handle_ceo_strategy_directive(m)
+            elif task == "FEATURE_RESPONSE":
+                self.handle_engineering_feature_response(m)
             else:
                 self.logger.warning(f"PMAgent: unhandled task_type '{task}'")
 
@@ -318,6 +322,30 @@ class PMAgent:
         self.backlog.record_interaction(hr_msg)
         submit(hr_msg)
 
+        eng_msg = Message.create(
+            sender=self.name,
+            recipient=AGENT_ENGINEERING,
+            task_type="IMPLEMENT_FEATURE",
+            context={"project_id": project_id, "source_task_type": "CEO_STRATEGY_DIRECTIVE", "priority": "high"},
+            payload={
+                "feature_id": "FT-STRATEGY-001",
+                "feature_name": "CEO Strategy Execution Track",
+                "spec": (
+                    "Implement the first engineering increment that directly supports "
+                    "the CEO strategy and report completion status/blockers back to PM."
+                ),
+                "acceptance_criteria": [
+                    "Feature increment aligns with CEO strategy directive.",
+                    "Implementation status is communicated back through router envelopes.",
+                    "No direct non-router inter-agent communication is used.",
+                ],
+                "strategy": strategy,
+            },
+        )
+        log_inter_agent_message(self.logger, eng_msg, direction="SENDING")
+        self.backlog.record_interaction(eng_msg)
+        submit(eng_msg)
+
         ceo_report = Message.create(
             sender=self.name,
             recipient=AGENT_CEO,
@@ -326,6 +354,55 @@ class PMAgent:
             payload={
                 "status": "staffing_routed_to_hr",
                 "requested_roles": requested_roles,
+            },
+        )
+        log_inter_agent_message(self.logger, ceo_report, direction="SENDING")
+        self.backlog.record_interaction(ceo_report)
+        submit(ceo_report)
+
+    def handle_engineering_feature_response(self, msg: Dict[str, Any]) -> None:
+        """
+        Handle Engineering -> PM result and close the loop back to CEO.
+        """
+        self.logger.info(f"PMAgent: handling FEATURE_RESPONSE {msg.get('id')}")
+        payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+        project_id = self._resolve_project_id(msg)
+        status = str(payload.get("status") or msg.get("status") or "unknown")
+        artifact_id = payload.get("artifact_id")
+
+        if write_agent_artifact is not None:
+            write_agent_artifact(
+                self.name,
+                title="PM Engineering Delivery Update",
+                artifact_type="status-update",
+                body=(
+                    "## Engineering Response\n\n"
+                    f"- Status: {status}\n"
+                    f"- Artifact ID: {artifact_id or 'N/A'}\n\n"
+                    "## Raw Payload\n\n"
+                    "```json\n"
+                    f"{json.dumps(payload, indent=2, default=str)}\n"
+                    "```\n"
+                ),
+                metadata={
+                    "project_id": project_id,
+                    "source": "FEATURE_RESPONSE",
+                    "engineering_status": status,
+                },
+                source_message_id=str(msg.get("id", "")),
+                source_task_type="FEATURE_RESPONSE",
+            )
+
+        ceo_report = Message.create(
+            sender=self.name,
+            recipient=AGENT_CEO,
+            task_type="PM_REPORT",
+            context={"project_id": project_id, "source_task_type": "FEATURE_RESPONSE"},
+            payload={
+                "status": "engineering_update_received",
+                "engineering_status": status,
+                "engineering_artifact_id": artifact_id,
+                "engineering_payload": payload,
             },
         )
         log_inter_agent_message(self.logger, ceo_report, direction="SENDING")
