@@ -1,5 +1,6 @@
 import os
-from typing import Dict, Any, Optional
+import re
+from typing import Dict, Any, Optional, List
 
 from agent_transport import (
     AGENT_CEO,
@@ -19,6 +20,22 @@ from agent_logger import get_agent_logger, log_inter_agent_message
 
 BUDGET_APPROVAL_THRESHOLD = 10000
 
+# Delimiters a planner might use between channels: "+", ",", "&", "/", or " and ".
+_CHANNEL_SPLIT_RE = re.compile(r"\s*(?:\+|,|&|/|\band\b)\s*", flags=re.IGNORECASE)
+
+
+def _split_channels(channel: str) -> List[str]:
+    """
+    Normalise a free-form channel string into a clean list for channel_mix.
+
+    Handles "Email + Social Media", "Email, Social, Search",
+    "Email & SMS", "Email/Social", "Email and Social" -> list of channels.
+    Empty / missing input yields an empty list rather than [''].
+    """
+    if not channel:
+        return []
+    return [c.strip() for c in _CHANNEL_SPLIT_RE.split(channel) if c.strip()]
+
 
 class MarketingAgent:
     def __init__(self, name: str = "Marketing") -> None:
@@ -29,29 +46,25 @@ class MarketingAgent:
     # Main poll entry-point
     #
     # Called once per poll cycle by run_single_agent.py's run_drain_agent().
-    # The guide requires IDLE -> fetch ONE message -> BUSY -> ack/nack -> IDLE.
+    # Router mode: IDLE -> lease ONE message -> BUSY -> ack/nack -> IDLE.
+    # run_single_agent re-invokes run() on the next poll interval.
     #
-    # In offline/demo mode (ENTERPRISE_ROUTER_OFFLINE_DEMO=1) the local
-    # MessageBus has no lease concept, so we drain all queued messages at once
-    # just as before -- that path is test/demo only and does not go through
-    # the real router.
+    # Offline/demo mode (ENTERPRISE_ROUTER_OFFLINE_DEMO=1): the local
+    # MessageBus has no lease concept, so we drain all queued messages at
+    # once. That path is test/demo only and does not ack/nack.
     # ------------------------------------------------------------------
     def run(self) -> None:
         if local_fallback_enabled():
-            # Offline demo: drain everything from the in-process bus.
             msgs = drain_mailbox(self.name)
             for m in msgs:
                 self._process(m, use_router=False)
         else:
-            # Router mode: fetch exactly ONE leased message, process it,
-            # then ack/nack before returning.  run_single_agent will call
-            # run() again on the next poll interval.
             m = receive(self.name)
             if m is not None:
                 self._process(m, use_router=True)
 
     def _process(self, m: Dict[str, Any], *, use_router: bool) -> None:
-        """Dispatch a single message and ack/nack when done."""
+        """Dispatch a single message and ack/nack when done (router mode only)."""
         log_inter_agent_message(self.logger, m, direction="RECEIVING")
         try:
             task_type = m.get("task_type")
@@ -78,25 +91,59 @@ class MarketingAgent:
     # ------------------------------------------------------------------
 
     def _base_context(self, msg: Dict[str, Any], project_id: Optional[str]) -> Dict[str, Any]:
-        """
-        Build the correlation context that every outbound message must carry.
-
-        The guide requires:
-          - project_id        : groups messages belonging to the same project
-          - source_message_id : the id of the inbound message that triggered
-                                this outbound one (enables end-to-end tracing)
-          - run_id            : propagated from the inbound message when present,
-                                so the entire workflow can be correlated in the UI
-        """
         run_id = msg.get("context", {}).get("run_id", "")
-        ctx: Dict[str, Any] = {
-            "source_message_id": msg.get("id", ""),
-        }
+        ctx: Dict[str, Any] = {"source_message_id": msg.get("id", "")}
         if project_id:
             ctx["project_id"] = project_id
         if run_id:
             ctx["run_id"] = run_id
         return ctx
+
+    def _generate_creative_assets(
+        self,
+        msg: Dict[str, Any],
+        product: str,
+        features: List[Any],
+        campaign: Dict[str, Any],
+        project_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """
+        Generate the email + image prompt, render the campaign brief, write it
+        as an artifact and announce it to CEO.
+
+        Runs for EVERY launch campaign regardless of the budget branch, so an
+        ad-campaign email is always produced -- even when the campaign is held
+        for CEO budget approval. Returns the generated email dict.
+        """
+        email = generate_email(
+            product=product,
+            tagline=campaign.get("tagline", ""),
+            features=features,
+        )
+        self.logger.info(f"MarketingAgent: email subject -- {email.get('subject')}")
+
+        image_prompt = generate_image_prompt(
+            product=product,
+            tagline=campaign.get("tagline", ""),
+            features=features,
+        )
+        self.logger.info(
+            f"MarketingAgent: image prompt -- {image_prompt.get('prompt', '')[:80]}"
+        )
+
+        brief_md = render_campaign_brief_md(product, campaign, email, image_prompt)
+        brief_artifact = write_artifact(
+            agent=self.name,
+            name="campaign_brief",
+            content=brief_md,
+            project_id=project_id,
+        )
+        self.logger.info(
+            f"MarketingAgent: campaign brief written to {brief_artifact['path']}"
+        )
+        # Non-fatal: a failure logs a warning and never raises.
+        publish_artifact(brief_artifact, source_msg=msg)
+        return email
 
     # ------------------------------------------------------------------
     # Task handlers
@@ -122,13 +169,16 @@ class MarketingAgent:
 
         campaign = plan_campaign(product, features)
         campaign["project_id"] = project_id
-        self.logger.info(f"MarketingAgent: campaign planned — budget ${campaign.get('budget', 0)}")
+        self.logger.info(f"MarketingAgent: campaign planned -- budget ${campaign.get('budget', 0)}")
 
         budget = campaign.get("budget", 0)
         base_ctx = self._base_context(msg, project_id)
 
         if budget > BUDGET_APPROVAL_THRESHOLD:
-            # Budget requires CEO approval before the campaign can run.
+            # Budget requires CEO approval before the campaign can launch.
+            # We do NOT save the campaign or notify Sales yet, but we still
+            # generate the creative assets (email/visual/brief) below so the
+            # CEO can review them alongside the approval request.
             approval_msg = Message.create(
                 sender=self.name,
                 recipient=AGENT_CEO,
@@ -156,12 +206,12 @@ class MarketingAgent:
                 details={"product_name": product, "budget": budget},
             )
             self.logger.info(
-                f"MarketingAgent: budget ${budget} exceeds threshold — "
+                f"MarketingAgent: budget ${budget} exceeds threshold -- "
                 "sent BUDGET_APPROVAL to CEO"
             )
 
         else:
-            # Budget is within limits — save campaign, notify Sales, write artifact.
+            # Budget is within limits -- save campaign and notify Sales.
             save_campaign(campaign)
             storage.add_project_event(
                 source=self.name,
@@ -179,7 +229,7 @@ class MarketingAgent:
                 context=base_ctx,
                 payload={
                     "product_name": product,
-                    "channel_mix": campaign.get("channel", "").split(" + "),
+                    "channel_mix": _split_channels(campaign.get("channel", "")),
                     "budget": budget,
                     "expected_leads": campaign.get("expected_leads", 0),
                     "lead_list_forwarded_to_sales": True,
@@ -189,33 +239,6 @@ class MarketingAgent:
             submit(launch_msg)
             self.logger.info("MarketingAgent: CAMPAIGN_LAUNCHED sent to Sales")
 
-            email = generate_email(
-                product=product,
-                tagline=campaign.get("tagline", ""),
-                features=features,
-            )
-            self.logger.info(f"MarketingAgent: email subject — {email.get('subject')}")
-
-            image_prompt = generate_image_prompt(
-                product=product,
-                tagline=campaign.get("tagline", ""),
-                features=features,
-            )
-            self.logger.info(
-                f"MarketingAgent: image prompt — {image_prompt.get('prompt', '')[:80]}"
-            )
-
-            # Write the campaign brief artifact and announce it to CEO.
-            brief_md = render_campaign_brief_md(product, campaign, email, image_prompt)
-            brief_artifact = write_artifact(
-                agent=self.name,
-                name="campaign_brief",
-                content=brief_md,
-                project_id=project_id,
-            )
-            self.logger.info(
-                f"MarketingAgent: campaign brief written to {brief_artifact['path']}"
-            )
-            # publish_artifact() sends ARTIFACT_PUBLISHED to CEO via the router.
-            # It is non-fatal: a failure logs a warning and never raises.
-            publish_artifact(brief_artifact, source_msg=msg)
+        # Creative assets (incl. the ad-campaign email) are generated for both
+        # branches -- approval-pending and launched alike.
+        self._generate_creative_assets(msg, product, features, campaign, project_id)
