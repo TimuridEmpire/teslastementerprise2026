@@ -1,76 +1,921 @@
-# Global Requirements
+# TESLA STEM Enterprise 2026
 
-## Decision-Making Hierarchy: 
-CEO Agent is the central decision-maker. It delegates tasks, resolves conflicts, approves major actions (e.g., budgets >$10K, product launches), and monitors progress via periodic reports from all agents.
+TESLA STEM Enterprise 2026 is a router-backed multi-agent enterprise simulation. The project combines:
 
-# Agent Specific Info
+- A Python backend of autonomous department agents.
+- A FastAPI `enterprise_router` service that acts as the shared communication layer.
+- A Next.js website that shows health, queues, audit activity, artifacts, and operator controls.
+- A test suite that verifies message schemas, router behavior, agent integrations, storage, and local workflows.
 
-## CEO Agent
-- **Role**: Strategic leader; sets goals, delegates, arbitrates.
-- **Responsibilities**: Analyze market trends; define quarterly OKRs; assign tasks (e.g., "Launch MVP"); review reports; veto/approve proposals.
-- **Inputs**: Market data, agent reports. Outputs: Task delegations, OKRs, final decisions.
-- **Behaviors**: Uses reasoning chains for prioritization; prompts like "Prioritize based on ROI >20%." Tools: Analytics dashboard, email notifier.
-- **Distribution tokens:** The CEO also governs [distribution tokens](#distribution-tokens-ceo-managed) (scenarios, minting, and per-agent assignments) when the message bus enforces token-gated sends.
+The most important idea in this repository is simple: agents do not directly write to each other's queues. In normal runtime, they communicate through the Enterprise Router over HTTP. The router authenticates each agent, validates what that agent is allowed to receive, stores queued work, leases messages to workers, records ack/nack outcomes, and exposes live state to the website.
 
-## HR Agent
-- **Role**: Manages talent and operations.
-- **Responsibilities**: Recruit "virtual hires" (spawn sub-agents); onboard/train; performance reviews; compliance checks.
-- **Inputs**: Role reqs from CEO. Outputs: Hiring plans, team rosters, training modules.
-- **Behaviors**: Screens resumes; simulates interviews. Tools: LinkedIn scraper, calendar scheduler.
+This README is intentionally detailed. It is written for both technical contributors and non-technical stakeholders who need to understand what the system is, how the pieces fit, and how information moves through the unified agent organization.
 
-## Shared Router Integration
+## Table of Contents
 
-This repo now includes `enterprise_router_client.py`, a small adapter for the local `enterprise_router` FastAPI service. Runtime agent-to-agent communication must use this router instead of writing directly to MongoDB, sharing a SQLite file, or using the local `MessageBus`.
+1. [Project at a Glance](#project-at-a-glance)
+2. [Core Architecture](#core-architecture)
+3. [Important Files and Directories](#important-files-and-directories)
+4. [Unified Agent System](#unified-agent-system)
+5. [Agent Responsibilities](#agent-responsibilities)
+6. [How Agents Talk to Each Other](#how-agents-talk-to-each-other)
+7. [Enterprise Router Deep Dive](#enterprise-router-deep-dive)
+8. [Frontend and Backend Intersection](#frontend-and-backend-intersection)
+9. [Message Envelope Standard](#message-envelope-standard)
+10. [Artifacts and Outputs](#artifacts-and-outputs)
+11. [Live vs Mock Data](#live-vs-mock-data)
+12. [Setup](#setup)
+13. [Running the System Locally](#running-the-system-locally)
+14. [Website Commands](#website-commands)
+15. [Testing](#testing)
+16. [Docker and Local LLM Notes](#docker-and-local-llm-notes)
+17. [Environment Variables](#environment-variables)
+18. [Storage Backends](#storage-backends)
+19. [Common Workflows](#common-workflows)
+20. [Troubleshooting](#troubleshooting)
+21. [Security and Privacy Notes](#security-and-privacy-notes)
+22. [Developer Notes](#developer-notes)
+23. [Graphify Architecture Notes](#graphify-architecture-notes)
 
-Recommended flow:
+## Project at a Glance
 
-1. Start the Enterprise Router API.
-2. Configure the router with SQLite for local development or MongoDB as the router storage backend.
-3. Register each agent in the router and issue that agent an API key.
-4. Set that key in this repo's environment.
-5. Agents call the router API to send, fetch, ack, and nack messages.
+The repository models an enterprise made of specialized software agents. Each agent has a department-like role. The CEO sets strategy and delegates. PM converts strategy into plans and routes work. Engineering implements or simulates implementation. HR handles staffing and thread allocation. Marketing plans campaigns. The Strategic Advisor reviews CEO proposals for alignment.
 
-Required environment variables for an agent process:
+The router is the operational center. It does not decide business strategy. Instead, it provides the shared communication infrastructure that lets the agents act as one coordinated system.
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `ENTERPRISE_ROUTER_URL` | Base URL for the router API | empty |
-| `ENTERPRISE_AGENT_NAME` | Default authenticated agent name for one process | empty |
-| `ENTERPRISE_AGENT_API_KEY` | API key for one authenticated agent process | empty |
-| `CEO_AGENT_API_KEY` | CEO worker API key used by `run_agents.py` | empty |
-| `PM_AGENT_API_KEY` | PM worker API key used by `run_agents.py` | empty |
-| `MARKETING_AGENT_API_KEY` | Marketing worker API key used by `run_agents.py` | empty |
-| `HR_AGENT_API_KEY` | HR worker API key used by `run_agents.py` | empty |
-| `ENGINEERING_AGENT_API_KEY` | Engineering worker API key used by `run_agents.py` | empty |
-| `ADVISOR_AGENT_API_KEY` | Strategic Advisor worker API key used by `run_agents.py` | empty |
-| `ENTERPRISE_ROUTER_TIMEOUT_S` | HTTP timeout in seconds | `10` |
+Current implemented runtime workers:
 
-`ENTERPRISE_ROUTER_API_URL`, `ENTERPRISE_ROUTER_AGENT_NAME`, and `ENTERPRISE_ROUTER_AGENT_API_KEY` are accepted as compatibility aliases, but new runtime setup should use the baseline names above. `ENTERPRISE_ROUTER_OFFLINE_DEMO=1` is the only supported way to intentionally use local `MessageBus`/legacy Mongo demo paths.
+- `CEO`
+- `PM`
+- `Marketing`
+- `HR`
+- `Engineering`
+- `Strategic Advisor`
 
-The HR worker in `hr-agents/hr_agent.py` now polls `POST /messages/fetch-next` through `EnterpriseRouterClient`, processes the envelope, then calls `ack` or `nack` on the shared router. The CEO and Advisor agents have the same router path through `process_one_router_message()`, and PM/Marketing/Engineering use `agent_transport` for send/fetch/ack. `AgentBacklog` remains useful as a local execution log, but the shared queue of record is the router API. The website visualizes the same queues and audit events through FastAPI without reading this repo's local files.
+Registered but not implemented as long-running workers in this codebase:
 
-For future agents, reuse the same pattern:
+- `Sales`
+- `Finance`
 
-```python
-from enterprise_router_client import EnterpriseRouterClient
+The website knows about Sales and Finance because they are part of the intended enterprise model, but `run_agents.py` skips them because this repository does not currently include active worker implementations for those departments.
 
-client = EnterpriseRouterClient.from_env(agent_name="Sales")
-envelope = client.fetch_next("Sales")
-if envelope:
-    # process work here
-    client.ack_message(envelope["id"], "Sales")
+## Core Architecture
+
+At a high level, the system has five layers.
+
+### 1. Agent Layer
+
+The agent layer contains the department workers. These are Python modules that poll the router, process one message at a time, and optionally create follow-up messages.
+
+Key files:
+
+- `ceo-agents/ceo_agent.py`
+- `ceo-agents/advisor_agent.py`
+- `pm-agents/pm_agent.py`
+- `marketing-agents/marketing_agent.py`
+- `hr-agents/hr_agent.py`
+- `eng-agents/engineering_agent.py`
+- `run_agents.py`
+- `run_single_agent.py`
+
+### 2. Router Layer
+
+The router layer is the shared API and persistence boundary. It owns registration, API keys, queueing, leases, retries, audit records, and artifact read endpoints.
+
+Key files:
+
+- `enterprise_router/api.py`
+- `enterprise_router/service.py`
+- `enterprise_router/models.py`
+- `enterprise_router/router_storage.py`
+- `enterprise_router/sqlite_storage.py`
+- `enterprise_router/mongo_storage.py`
+- `enterprise_router/config.py`
+- `enterprise_router/agent_artifacts.py`
+
+### 3. Transport and Message Layer
+
+The transport layer gives agents a consistent way to build, validate, submit, fetch, ack, and nack messages.
+
+Key files:
+
+- `message_schema.py`
+- `enterprise_router_client.py`
+- `agent_transport.py`
+- `message_bus.py`
+- `agent_backlog.py`
+- `inter_agent_api.py`
+- `inter_agent_mongo.py`
+
+In normal runtime, `enterprise_router_client.py` and `agent_transport.py` are the main route. `message_bus.py` and legacy Mongo paths are reserved for explicit offline/demo scenarios.
+
+### 4. Website Layer
+
+The website is a Next.js app that displays the enterprise state and lets a manager send router-backed interventions.
+
+Key files:
+
+- `website/app/dashboard/page.tsx`
+- `website/app/observability/page.tsx`
+- `website/app/chat/page.tsx`
+- `website/app/agents/[agent]/page.tsx`
+- `website/app/messages/page.tsx`
+- `website/app/onboarding/page.tsx`
+- `website/lib/api.ts`
+- `website/lib/hooks.ts`
+- `website/lib/live-metrics.ts`
+- `website/lib/chat-router.ts`
+- `website/components/chat/*`
+- `website/components/layout/*`
+
+### 5. Test and Simulation Layer
+
+The tests validate the router, agents, schemas, CLI behavior, and integrated flows.
+
+Key files:
+
+- `tests/test_enterprise_router.py`
+- `tests/test_enterprise_router_e2e.py`
+- `tests/test_enterprise_router_client.py`
+- `tests/test_agent_transport_runtime.py`
+- `tests/test_ceo_router_integration.py`
+- `tests/test_hr_router_integration.py`
+- `tests/test_engineering_light_demo.py`
+- `tests/standard_scenario_test.py`
+- `pytest.ini`
+
+## Important Files and Directories
+
+### Root Python Runtime
+
+`run_agents.py`
+
+Starts multiple implemented workers. It checks for agent API keys, skips missing workers, and starts one child process per runnable agent.
+
+`run_single_agent.py`
+
+Starts one worker. `run_agents.py` uses this internally. It maps friendly names like `advisor` or `eng` to canonical router names like `Strategic Advisor` and `Engineering`.
+
+`enterprise_router_client.py`
+
+Small HTTP client for the router. It reads router URL, agent name, API key, and timeout from the environment. It submits envelopes, fetches the next message, peeks queues, and performs ack/nack operations.
+
+`agent_transport.py`
+
+Shared transport helper used by department agents. It enforces the rule that runtime communication uses the Enterprise Router unless `ENTERPRISE_ROUTER_OFFLINE_DEMO=1` is intentionally set.
+
+`message_schema.py`
+
+Single source of truth for the inter-agent message envelope. All major messaging paths normalize or validate messages through this module.
+
+`agent_backlog.py`
+
+Local execution log. This is useful for debugging and local history, but it is not the shared queue of record. The router is the source of truth for live agent-to-agent delivery.
+
+`enterprise_paths.py`
+
+Centralizes local paths and environment-based persistence settings for backlog DBs, JSONL logs, MongoDB, router URL, and artifacts.
+
+### Enterprise Router Package
+
+`enterprise_router/api.py`
+
+FastAPI application. Exposes health, registrations, agent management, message submit/fetch/ack/nack, queue inspection, audit log, manager intervention, and artifact endpoints.
+
+`enterprise_router/service.py`
+
+Business logic for the router. Handles registration approval, API key authentication, access checks, queue maintenance, priority, TTL, dedupe, leases, retries, dead-lettering, and audit logging.
+
+`enterprise_router/models.py`
+
+Dataclasses for router records: `RegistrationRequest`, `AgentApiKeyRecord`, `AgentRecord`, `RoutingHints`, and `QueuedMessage`.
+
+`enterprise_router/router_storage.py`
+
+Storage interface and factory for router persistence.
+
+`enterprise_router/sqlite_storage.py`
+
+SQLite implementation of router persistence. This is the normal local-development backend.
+
+`enterprise_router/mongo_storage.py`
+
+MongoDB implementation of the same storage contract. This is optional and should be used only when intentionally running the router with MongoDB.
+
+`enterprise_router/agent_artifacts.py`
+
+Writes markdown deliverables from agents into `artifacts/`, indexes them, and serves public-safe artifact metadata/content through the router API.
+
+### Agent Logic and Planning Notes
+
+`agent_logic_structures/`
+
+Contains design notes and pseudocode for CEO, PM, HR, Marketing, Engineering, Strategic Advisor, and router implementation concepts. These files are useful for understanding intended behavior and future roadmap.
+
+`agents.md`
+
+Short handoff document that summarizes the repo purpose, architecture, run flow, environment notes, and common issues.
+
+### Website
+
+`website/package.json`
+
+Next.js scripts and dependencies.
+
+`website/lib/api.ts`
+
+The website API client. It calls the router over HTTP. It does not read MongoDB or SQLite directly.
+
+`website/lib/hooks.ts`
+
+Polling hooks for health, agents, audit events, registrations, queues, and artifacts.
+
+`website/lib/live-metrics.ts`
+
+Transforms router audit and queue information into dashboard-friendly metrics.
+
+`website/app/*`
+
+Next.js route pages for dashboard, chat, agents, messages, resources, settings, workflows, simulation, lab, onboarding, and observability.
+
+### Graphify Output
+
+`../graphify-out/GRAPH_REPORT.md`
+
+Architecture graph report generated from the codebase. It identifies high-connectivity modules and communities, including Enterprise Router API, Router Client, Agent Transport, CEO Agent Core, PM Agent Tools, Website API Client, Live Metrics, and Run Agents CLI.
+
+`../graphify-out/graph.html`
+
+Interactive graph visualization.
+
+`../graphify-out/graph.json`
+
+Machine-readable architecture graph.
+
+## Unified Agent System
+
+The system behaves like a small company:
+
+1. A user, onboarding flow, script, or manager intervention creates a business request.
+2. The request enters the Enterprise Router as a message.
+3. The router stores the message in the recipient's queue.
+4. The recipient agent fetches one message, processes it, and marks it complete or failed.
+5. The agent may create follow-up messages for other departments.
+6. Each follow-up returns to the router, where the same queueing and audit process repeats.
+7. The website watches router health, audit records, queues, and artifacts to show what happened.
+
+This creates a unified system because all major agents share the same communication contract:
+
+- Same message envelope.
+- Same router API.
+- Same queue lifecycle.
+- Same audit log.
+- Same artifact surface for completed work.
+- Same local runtime setup process.
+
+The agents are autonomous in the sense that each agent decides what to do when it receives a supported `task_type`. They are coordinated because no agent needs private access to another agent's memory or local files to communicate. The router is the neutral exchange point.
+
+## Agent Responsibilities
+
+### CEO Agent
+
+Primary file: `ceo-agents/ceo_agent.py`
+
+Router name: `CEO`
+
+Role: strategic leader and central decision-maker.
+
+What the CEO does:
+
+- Receives high-level business prompts.
+- Executes strategic reasoning loops.
+- Gathers simulated department reports.
+- Calls a local Ollama/Mistral model for strategic analysis and summaries when available.
+- Writes CEO strategy artifacts.
+- Delegates strategy to PM through `CEO_STRATEGY_DIRECTIVE`.
+- Receives PM and Engineering updates.
+- Handles CEO-specific tasks such as `CEO_CHAT`, `CEO_REASONING_LOOP`, `CEO_METRICS`, `CEO_GATHER_ONLY`, `CEO_STRATEGIC_CYCLE`, and `CEO_ENVIRONMENT_SIGNAL`.
+- Manages distribution token scenarios in local/demo message-bus flows.
+- Can process `MINT_TOKENS` requests from HR.
+
+Important CEO outputs:
+
+- Strategy artifacts.
+- `CEO_STRATEGY_DIRECTIVE` messages to PM.
+- Status responses and audit-visible message lifecycle events.
+
+Important CEO safety behavior:
+
+- The CEO class includes child-safety and local-audio privacy checks.
+- If child-safety signals indicate children are nearby, certain strategic/resource allocation operations can be rerouted to a Legal Compliance Agent concept.
+- Audio-policy context can require local-only processing and disallow external audio storage.
+
+### PM Agent
+
+Primary file: `pm-agents/pm_agent.py`
+
+Router name: `PM`
+
+Role: product planning and coordination.
+
+What PM does:
+
+- Converts CEO strategy into execution plans.
+- Creates and stores project records.
+- Generates and prioritizes feature lists using PM tools.
+- Writes roadmap and strategy-routing artifacts.
+- Sends staffing needs to HR.
+- Sends implementation work to Engineering.
+- Sends reports back to CEO.
+- Handles Engineering feature responses and closes the loop back to CEO.
+
+Supported tasks include:
+
+- `DEFINE_Q2_ROADMAP`
+- `REQUEST_FEATURES`
+- `CEO_STRATEGY_DIRECTIVE`
+- `FEATURE_RESPONSE`
+- `MANAGER_INTERVENTION`
+
+Important PM outputs:
+
+- Roadmap artifacts.
+- `TALENT_REALLOCATION` messages to HR.
+- `IMPLEMENT_FEATURE` messages to Engineering.
+- `PM_REPORT` messages to CEO.
+- In roadmap flows, downstream messages can also route to Marketing.
+
+### Marketing Agent
+
+Primary file: `marketing-agents/marketing_agent.py`
+
+Router name: `Marketing`
+
+Role: campaign planning and marketing execution.
+
+What Marketing does:
+
+- Receives campaign launch requests.
+- Plans campaigns based on product and feature payloads.
+- Estimates campaign budget and expected leads.
+- Requests CEO budget approval if budget exceeds a configured threshold.
+- Saves campaign information through PM storage helpers.
+- Writes campaign brief artifacts.
+- Sends campaign launch notifications to Sales when campaign budgets do not require executive approval.
+- Records PM report events.
+
+Supported tasks include:
+
+- `LAUNCH_CAMPAIGN`
+- `PM_REPORT`
+- `THREAD_ALLOCATION`
+- `MANAGER_INTERVENTION`
+
+Important Marketing outputs:
+
+- `BUDGET_APPROVAL` messages to CEO when a campaign exceeds the approval threshold.
+- `CAMPAIGN_LAUNCHED` messages to Sales when a campaign can proceed.
+- Campaign brief artifacts.
+
+Current limitation:
+
+- Sales is registered but does not currently have a running worker in this repository, so Sales-targeted messages can be queued and observed but not consumed by a local Sales worker unless one is added.
+
+### HR Agent
+
+Primary file: `hr-agents/hr_agent.py`
+
+Router name: `HR`
+
+Role: staffing, agent capacity, and organizational operations.
+
+What HR does:
+
+- Processes staffing and talent reallocation requests.
+- Maintains a local view of desired agent counts.
+- Can route thread allocation instructions to other agents.
+- Can request distribution tokens from CEO.
+- Writes HR staffing artifacts for `TALENT_REALLOCATION` messages.
+- Runs with multiple polling threads in its standalone entrypoint.
+
+Supported tasks include:
+
+- `TALENT_REALLOCATION`
+- `THREAD_ALLOCATION`
+- `MANAGER_INTERVENTION`
+
+Important HR outputs:
+
+- `THREAD_ALLOCATION` messages to departments.
+- `MINT_TOKENS` requests to CEO.
+- HR staffing review artifacts.
+
+### Engineering Agent
+
+Primary file: `eng-agents/engineering_agent.py`
+
+Router name: `Engineering`
+
+Role: implementation, code generation, testing, and technical reporting.
+
+What Engineering does:
+
+- Receives feature implementation requests.
+- Builds an implementation specification from the incoming message.
+- In full mode, uses CrewAI roles for lead developer, developer, and tester.
+- Generates files into `OUTPUT_DIR`.
+- Runs tests for generated code.
+- Iterates fixes until tests pass or the configured iteration limit is reached.
+- Writes Engineering artifacts describing generated files, test status, review notes, and errors.
+- Sends `FEATURE_RESPONSE` back to the requesting agent, usually PM.
+
+Supported tasks include:
+
+- `IMPLEMENT_FEATURE`
+- `generate_code`
+- `FEATURE_RESPONSE`
+- `THREAD_ALLOCATION`
+- `MANAGER_INTERVENTION`
+
+Light demo mode:
+
+- If CrewAI dependencies are missing, `run_agents.py` can start Engineering in deterministic light-demo mode.
+- Light-demo mode consumes `IMPLEMENT_FEATURE`, writes an artifact, sends `FEATURE_RESPONSE`, and acks the router message, but it does not generate real code.
+
+Full mode:
+
+- Requires `crewai` and `crewai_tools`.
+- Uses Ollama-compatible local LLM configuration.
+- Can optionally commit generated output to a configured Git repository.
+
+### Strategic Advisor Agent
+
+Primary file: `ceo-agents/advisor_agent.py`
+
+Router name: `Strategic Advisor`
+
+Role: strategic review and alignment check.
+
+What the Advisor does:
+
+- Reviews CEO proposals or strategy-review requests.
+- Compares proposals against a core strategy string.
+- Returns an advisory response to the proposal sender.
+- Flags simple strategic drift, such as hardware/manufacturing proposals when the strategy is software-focused.
+
+Supported tasks include:
+
+- `STRATEGY_REVIEW_REQUEST`
+- `CEO_PROPOSAL_FOR_REVIEW`
+- Any task ending in `_FOR_REVIEW`
+- `MANAGER_INTERVENTION`
+
+Important Advisor outputs:
+
+- `STRATEGY_REVIEW_RESULT` messages back to CEO or the original sender.
+
+### Sales Agent
+
+Router name: `Sales`
+
+Role: intended sales follow-through for campaigns and customer-facing activity.
+
+Current state:
+
+- Sales is registered by setup scripts.
+- The website can display Sales as an enterprise participant.
+- This repository does not currently include an active Sales worker implementation used by `run_agents.py`.
+
+Expected future behavior:
+
+- Consume `CAMPAIGN_LAUNCHED`.
+- Convert campaign outputs into pipeline or lead activity.
+- Report outcomes back to CEO, PM, Marketing, or Finance.
+
+### Finance Agent
+
+Router name: `Finance`
+
+Role: intended budget, forecast, ROI, and approval support.
+
+Current state:
+
+- Finance is registered by setup scripts.
+- The website can display Finance as an enterprise participant.
+- This repository includes some finance-related modules and tests, but `run_agents.py` marks Finance as missing because there is no active runtime worker wired into the launcher.
+
+Expected future behavior:
+
+- Consume budget and approval tasks.
+- Calculate ROI and financial risk.
+- Return finance reports to CEO or PM.
+
+### Manager
+
+Router name: `MANAGER`
+
+Role: dashboard/operator identity rather than a normal department worker.
+
+What Manager does:
+
+- Submits website-originated interventions through `/manager/interventions`.
+- Uses manager credentials from website environment variables.
+- Lets the website queue instructions to real agents without pretending the browser is a department worker.
+
+Current limitation:
+
+- `MANAGER` is primarily an authenticated sender. It is not a long-running worker in `run_agents.py`.
+
+## How Agents Talk to Each Other
+
+Agents communicate through router messages. The usual lifecycle is:
+
+1. Sender builds a canonical envelope with `Message.create(...)`.
+2. Sender submits the envelope through `EnterpriseRouterClient` or `agent_transport.submit(...)`.
+3. Router authenticates the sender using the `Authorization` bearer token and `X-Agent-Id`.
+4. Router verifies that the envelope sender matches the authenticated agent.
+5. Router checks the recipient's allowlist for supported task types.
+6. Router stores the message with routing hints such as priority, TTL, or dedupe key.
+7. Recipient worker polls its queue with `/messages/fetch-next`.
+8. Router leases one message to the recipient.
+9. Recipient handles the message.
+10. Recipient calls ack on success or nack on failure.
+11. Router records audit events for the lifecycle.
+
+### Example CEO to PM Flow
+
+1. Website onboarding or chat queues a `CEO_REASONING_LOOP` message.
+2. CEO worker fetches the message.
+3. CEO gathers simulated department data and calls the local model for strategy.
+4. CEO writes a strategy artifact.
+5. CEO sends `CEO_STRATEGY_DIRECTIVE` to PM.
+6. PM fetches the directive.
+7. PM writes a routing plan artifact.
+8. PM sends `TALENT_REALLOCATION` to HR.
+9. PM sends `IMPLEMENT_FEATURE` to Engineering.
+10. PM sends `PM_REPORT` back to CEO.
+11. HR and Engineering process their own messages.
+12. Engineering sends `FEATURE_RESPONSE` to PM.
+13. PM turns Engineering's response into a `PM_REPORT` for CEO.
+
+### Example PM to Marketing Flow
+
+1. PM receives `DEFINE_Q2_ROADMAP`.
+2. PM creates a project and roadmap.
+3. PM decides downstream routes.
+4. PM sends `LAUNCH_CAMPAIGN` and/or `PM_REPORT` to Marketing.
+5. Marketing plans the campaign.
+6. Marketing either requests `BUDGET_APPROVAL` from CEO or sends `CAMPAIGN_LAUNCHED` to Sales.
+
+### Example Advisor Flow
+
+1. CEO or Manager sends a proposal review task to `Strategic Advisor`.
+2. Advisor evaluates whether the proposal aligns with core strategy.
+3. Advisor sends `STRATEGY_REVIEW_RESULT` back to the original sender.
+
+### Why This Matters
+
+The router-centered pattern gives the system several important properties:
+
+- Every work item has a traceable message ID.
+- Every message follows the same schema.
+- Agents can be restarted without losing queued work.
+- The website can observe message flow without reading private agent internals.
+- Failed messages can be retried or dead-lettered.
+- The system can add new agents by registering them and giving them a worker.
+
+## Enterprise Router Deep Dive
+
+The Enterprise Router is the most important backend component. It is both the message exchange and the operational record.
+
+### Router Responsibilities
+
+The router handles:
+
+- Agent registration.
+- Admin approval and rejection.
+- API key issuing.
+- API key hashing and validation.
+- Agent status and metadata.
+- Allowed task types.
+- Message validation.
+- Message submission.
+- Queue storage.
+- Priority calculation.
+- TTL expiration.
+- Dedupe keys.
+- Message leasing.
+- Ack/nack state transitions.
+- Retry attempts.
+- Dead-lettering after repeated failures.
+- Audit logging.
+- Artifact listing and artifact detail retrieval.
+- Manager interventions.
+
+### Router API Endpoints
+
+Important endpoints:
+
+- `GET /health`
+- `POST /registrations/request`
+- `POST /registrations/{agent_name}/approve`
+- `POST /registrations/{agent_name}/reject`
+- `GET /registrations`
+- `POST /agents`
+- `GET /agents`
+- `POST /agents/{agent_name}/issue-api-key`
+- `POST /messages`
+- `GET /messages/peek`
+- `POST /messages/fetch-next`
+- `GET /queue/{recipient}`
+- `POST /messages/{message_id}/ack`
+- `POST /messages/{message_id}/nack`
+- `POST /manager/interventions`
+- `GET /audit`
+- `GET /artifacts`
+- `GET /artifacts/{artifact_id}`
+
+### Authentication Model
+
+Agent endpoints use:
+
+- `Authorization: Bearer <agent-api-key>`
+- `X-Agent-Id: <agent-name>`
+
+Admin endpoints use:
+
+- `X-Admin-Secret: <admin-secret>`
+
+The README does not include real secret values. Local examples use placeholder development values only.
+
+### Access Control
+
+The router checks whether the target agent is active and whether the incoming task type is allowed for that recipient. For example:
+
+- CEO can receive tasks like `CEO_REASONING_LOOP`, `PM_REPORT`, `MINT_TOKENS`, and `BUDGET_APPROVAL`.
+- PM can receive `DEFINE_Q2_ROADMAP`, `REQUEST_FEATURES`, `CEO_STRATEGY_DIRECTIVE`, and `FEATURE_RESPONSE`.
+- Marketing can receive `LAUNCH_CAMPAIGN`, `PM_REPORT`, and `THREAD_ALLOCATION`.
+- HR can receive `TALENT_REALLOCATION`, `THREAD_ALLOCATION`, and `MANAGER_INTERVENTION`.
+- Engineering can receive `IMPLEMENT_FEATURE`, `FEATURE_RESPONSE`, `THREAD_ALLOCATION`, and `MANAGER_INTERVENTION`.
+- Strategic Advisor can receive review requests and manager interventions.
+
+These allowlists are defined in `scripts/bootstrap_router_agents.py` and written through `scripts/setup_local_runtime.py`.
+
+### Priority, TTL, and Dedupe
+
+Routing hints can include:
+
+- `priority`
+- `urgency`
+- `requires_response`
+- `ttl_seconds`
+- `dedupe_key`
+
+If `priority` is absent, `RoutingHints.from_mapping(...)` can map urgency strings to priority numbers. Examples include `critical`, `urgent`, `high`, `normal`, `medium`, and `low`.
+
+TTL lets messages expire if they are no longer relevant. Dedupe prevents duplicate messages for the same sender, recipient, task, and dedupe key.
+
+### Leases, Ack, Nack, and Dead Letters
+
+When a worker calls fetch-next, the router leases the message. The worker must then:
+
+- `ack` when processing succeeds.
+- `nack` when processing fails.
+
+Nacked messages are retried until they hit the maximum attempt count. After repeated nacks, the router dead-letters the message.
+
+This prevents one failing message from blocking the entire system forever while still giving transient errors a chance to recover.
+
+### Audit Log
+
+The audit log is the main timeline for completed work. Queues only show messages that are still waiting or currently visible. Once a worker fetches and acks/nacks a message, the message may leave the active queue view. The audit log records lifecycle events such as:
+
+- Agent registered.
+- API key issued.
+- Message submitted.
+- Message acked.
+- Message nacked.
+- Registration approved or rejected.
+
+The website's observability page relies heavily on audit data.
+
+## Frontend and Backend Intersection
+
+The frontend and backend meet at the Enterprise Router API. The website does not bypass the backend by reading SQLite, MongoDB, or local files directly. That is intentional.
+
+### What the Backend Provides
+
+The backend provides:
+
+- Router health.
+- Registered agent records.
+- Queue contents.
+- Audit events.
+- Artifact metadata and markdown content.
+- Manager intervention endpoint.
+- Agent-authenticated message operations.
+
+### What the Website Provides
+
+The website provides:
+
+- Dashboard overview.
+- Observability views.
+- Agent queue pages.
+- Agent output/artifact display.
+- Manager chat/intervention UI.
+- Onboarding flow that can queue a real CEO message.
+- Visual summaries from live router/audit data where available.
+- Mock/demo cards where live business metrics are not yet emitted by agents.
+
+### Website API Client
+
+`website/lib/api.ts` is the main bridge. It defines functions for:
+
+- `api.health()`
+- `api.agents.list(...)`
+- `api.agents.register(...)`
+- `api.messages.submit(...)`
+- `api.messages.peek(...)`
+- `api.messages.fetchNext(...)`
+- `api.messages.ack(...)`
+- `api.messages.nack(...)`
+- `api.queue.list(...)`
+- `api.manager.intervene(...)`
+- `api.audit.list(...)`
+- `api.artifacts.list(...)`
+- `api.artifacts.get(...)`
+
+### Website Polling
+
+`website/lib/hooks.ts` provides polling hooks:
+
+- Health every 30 seconds.
+- Agents every 15 seconds.
+- Audit every 8 seconds.
+- Registrations every 12 seconds.
+- Queue views every 4 seconds.
+- Artifacts every 6 seconds.
+
+This makes the website feel live without requiring websockets.
+
+### Important Frontend/Backend Behavior
+
+The website can show a message in a queue only while that message remains queued or visible. If a worker quickly fetches and acks it, the queue page may look empty. That does not mean nothing happened. Use:
+
+- `/observability` for audit history.
+- `/dashboard` for latest artifacts.
+- `/agents/<agent>` for an agent's active queue and latest output.
+- `/artifacts` API through the website views for completed markdown deliverables.
+
+## Message Envelope Standard
+
+Every inter-agent message should use the standard envelope from `message_schema.py`.
+
+Required fields:
+
+```json
+{
+  "id": "msg-12345678",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "sender": "CEO",
+  "recipient": "PM",
+  "task_type": "CEO_STRATEGY_DIRECTIVE",
+  "context": {},
+  "payload": {},
+  "status": "pending",
+  "error": ""
+}
 ```
 
-### Local Website Demo
+Field meanings:
 
-Use this flow to run the router, all implemented agent workers, and the website locally. Replace `<project-root>` with the path to this repository. If the router is in a separate checkout, replace `<router-repo>` with that checkout path. Do not commit `.env.local` or real API keys.
+- `id`: unique message identifier.
+- `timestamp`: UTC time when the envelope was created.
+- `sender`: authenticated sender name.
+- `recipient`: target agent name.
+- `task_type`: handler key used by the recipient.
+- `context`: correlation metadata, such as `run_id`, `project_id`, or `source_message_id`.
+- `payload`: business data or instruction body.
+- `status`: message status, usually `pending`, `in_progress`, `done`, or `error`.
+- `error`: error text if something failed.
 
-The implemented runtime workers are `CEO`, `PM`, `Marketing`, `HR`, `Engineering`, and `Strategic Advisor`. `Sales` and `Finance` are registered with the router/website, but this codebase does not currently include worker implementations for them, so `run_agents.py` reports them as missing and skips them.
+Good context fields:
 
-1. Start the Enterprise Router API in one terminal:
+- `run_id`: connects a full workflow.
+- `project_id`: connects messages for a product/project.
+- `source_message_id`: points to the inbound message that caused this outbound message.
+- `source_task_type`: explains why the follow-up exists.
+- `provenance_source`: identifies the script, UI, or agent path that created the message.
+- `provenance_agent`: identifies the agent responsible for creating the message.
+
+## Artifacts and Outputs
+
+Agents write completed work as markdown artifacts under `artifacts/`.
+
+Examples:
+
+- CEO strategy summary.
+- PM roadmap.
+- PM strategy routing plan.
+- HR staffing review.
+- Engineering feature implementation report.
+- Marketing campaign brief.
+
+The artifact system:
+
+- Writes markdown files into agent-specific folders.
+- Maintains an index file.
+- Returns public-safe metadata through the router.
+- Avoids exposing arbitrary local filesystem paths in the public artifact API.
+- Lets the website show completed work even after messages have left active queues.
+
+Important file:
+
+- `enterprise_router/agent_artifacts.py`
+
+## Live vs Mock Data
+
+Live today:
+
+- Router health.
+- Agent registration data.
+- Router queue data.
+- Router audit events.
+- Agent markdown artifacts.
+- Manager interventions that submit real router messages.
+- Onboarding trigger that can submit a real CEO reasoning message.
+- Agent queue pages for currently queued work.
+- Observability panels derived from audit and router lifecycle data.
+
+Mock or demo today:
+
+- Some revenue forecast visualizations.
+- Some budget allocation visualizations.
+- Sales pipeline metrics.
+- Capacity/load percentages.
+- Workflow progress cards.
+- Many KPI cards.
+
+Reason:
+
+The router knows message lifecycle information. It does not automatically know real revenue, ROI, staffing utilization, or sales pipeline metrics unless agents emit structured metric events or the backend adds metric-specific endpoints.
+
+## Setup
+
+These steps assume PowerShell on Windows from the repository root:
 
 ```powershell
-cd "<router-repo>"
+# Navigate to the root of the cloned repository
+cd "path/to/teslastementerprise2026"
+```
+
+### Python Environment
+
+Create and activate a virtual environment if one is not already available:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Install Python dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+If PowerShell blocks script activation, use your team's approved execution policy workflow or activate through another shell. Do not commit virtual environment folders.
+
+### Website Dependencies
+
+```powershell
+cd website
+npm install
+```
+
+Return to repo root when done:
+
+```powershell
+cd ..
+```
+
+## Running the System Locally
+
+The normal local flow is:
+
+1. Start the router.
+2. Register agents and generate local env files.
+3. Load worker env variables.
+4. Start workers.
+5. Start the website.
+6. Seed or submit a workflow.
+
+### 1. Start the Enterprise Router
+
+From the repository root:
+
+```powershell
 $env:ENTERPRISE_ROUTER_BACKEND="sqlite"
 $env:ENTERPRISE_ROUTER_DB="enterprise_router_demo.db"
 $env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
@@ -78,364 +923,685 @@ $env:ENTERPRISE_ROUTER_PORT="8000"
 python -m enterprise_router.api
 ```
 
-2. Confirm the router is reachable from a second terminal:
+The router defaults to SQLite for local development.
+
+### 2. Confirm Router Health
+
+In a second terminal:
 
 ```powershell
 Invoke-WebRequest -UseBasicParsing http://localhost:8000/health
 ```
 
-A healthy local router returns JSON similar to:
+Expected shape:
 
 ```json
 {"status":"ok","backend":"sqlite"}
 ```
 
-3. Register the default agents and write local key files:
+### 3. Register Agents and Generate Local Env Files
 
 ```powershell
-cd "<project-root>"
 $env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
 $env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
 python .\scripts\setup_local_runtime.py --write-website-env
 ```
 
-This writes local-only secret files:
+This registers the default agents and writes local-only helper files:
 
-- `.router_keys.ps1`: PowerShell environment variables for agent workers.
-- `.router_keys.cmd`: Command Prompt environment variables for agent workers.
-- `website/.env.local`: Next.js environment variables for the website.
-- `website/.env.local.generated`: generated website env backup.
+- `.router_keys.ps1`
+- `.router_keys.cmd`
+- `website/.env.local`
+- `website/.env.local.generated`
 
-These files are ignored by Git and should not be committed.
+Do not commit those files. They contain local runtime secrets.
 
-4. Load the generated worker keys:
+### 4. Load Worker Keys
+
+PowerShell:
 
 ```powershell
-cd "<project-root>"
 . .\.router_keys.ps1
 ```
 
-Command Prompt alternative:
+Command Prompt:
 
 ```cmd
-cd "<project-root>"
 call .router_keys.cmd
 ```
 
-5. Start the implemented agent workers:
+### 5. Start Agent Workers
 
 ```powershell
 python .\run_agents.py --agents all
 ```
 
-Current local worker behavior:
+Expected behavior:
 
-- `CEO`, `PM`, `Marketing`, `HR`, and `Strategic Advisor` should start.
-- `Engineering` runs the full CrewAI path when `crewai` and `crewai_tools` are installed.
-- If those packages are missing, `Engineering` starts in deterministic light-demo mode. It still consumes `IMPLEMENT_FEATURE`, writes an Engineering artifact, submits `FEATURE_RESPONSE`, and acks the router message, but it does not generate code.
-- `Sales` and `Finance` are skipped because this codebase does not yet include worker implementations for them.
-- PM and Marketing use local file storage by default (`data/pm_storage.json`) so local MongoDB is not required. Set `PM_STORAGE_BACKEND=mongo` only if you intentionally want PM/Marketing domain storage in Mongo.
+- CEO starts if `CEO_AGENT_API_KEY` is loaded.
+- PM starts if `PM_AGENT_API_KEY` is loaded.
+- Marketing starts if `MARKETING_AGENT_API_KEY` is loaded.
+- HR starts if `HR_AGENT_API_KEY` is loaded.
+- Strategic Advisor starts if `ADVISOR_AGENT_API_KEY` is loaded.
+- Engineering starts in full mode if CrewAI dependencies are installed.
+- Engineering starts in light-demo mode if CrewAI packages are missing.
+- Sales is skipped because no runtime worker exists.
+- Finance is skipped because no runtime worker exists.
 
-6. Start the website in another terminal:
+To check availability without starting workers:
 
 ```powershell
-cd "<project-root>\website"
-npm install
+python .\run_agents.py --agents all --list
+```
+
+To start a subset:
+
+```powershell
+python .\run_agents.py --agents CEO,PM,Engineering
+```
+
+### 6. Start the Website
+
+In another terminal:
+
+```powershell
+cd website
 npm run dev
 ```
 
-Open the Next.js URL from the terminal, usually `http://localhost:3000`.
+Open the URL printed by Next.js, usually:
 
-7. Start the demo workflow from the website:
+```text
+http://localhost:3000
+```
 
-- If onboarding appears, complete it. The final onboarding step queues a real `CEO_REASONING_LOOP` message through the Enterprise Router.
-- If the app opens directly to `/dashboard`, use `/chat` or an agent page to send an instruction to CEO. CEO-targeted website instructions use `CEO_REASONING_LOOP`.
+### 7. Seed a Workflow
 
-Alternative command-line seed:
+From the repo root with worker keys loaded:
 
 ```powershell
 python .\scripts\initiate_router_workflow.py
 ```
 
-This queues starter messages as CEO. Without onboarding/chat/this seed, workers mostly poll empty queues.
-
-What you should see:
-
-- `/dashboard` and `/observability` read router health, audit, and queue data.
-- `/dashboard` shows the newest live agent artifact in the `Latest agent output` panel.
-- `/observability` shows live audit events and router throughput after onboarding or the initiation script submits messages.
-- `/messages` shows the live MANAGER queue. It does not show all historical messages.
-- Agent pages show that agent's current inbound queue while messages are still queued, plus that agent's newest markdown output.
-- Running workers fetch queued messages, process them, then ack or nack them.
-- Router audit history shows the lifecycle of submitted, fetched, acked, and nacked messages.
-
-### Seeing Agent Responses
-
-Agent responses are not chat bubbles yet. They are router messages, audit events, and markdown artifacts.
-
-Where to look:
+Optional variants:
 
 ```powershell
-# Router audit log
+python .\scripts\initiate_router_workflow.py --no-include-engineering
+python .\scripts\initiate_router_workflow.py --no-include-hr
+python .\scripts\initiate_router_workflow.py --no-include-advisor
+python .\scripts\initiate_router_workflow.py --dry-run
+```
+
+The seed script submits CEO-originated starter messages for a router-driven workflow.
+
+## Website Commands
+
+From `website/`:
+
+```powershell
+npm run dev
+```
+
+Runs the local development server.
+
+```powershell
+npm run build
+```
+
+Builds the production Next.js app.
+
+```powershell
+npm run start
+```
+
+Starts the built production app.
+
+```powershell
+npm run lint
+```
+
+Runs Next.js linting.
+
+Important website env values:
+
+- `NEXT_PUBLIC_API_URL`
+- `NEXT_PUBLIC_ADMIN_SECRET`
+- `NEXT_PUBLIC_MANAGER_API_KEY`
+- `NEXT_PUBLIC_CEO_API_KEY`
+- `NEXT_PUBLIC_PM_API_KEY`
+- `NEXT_PUBLIC_MARKETING_API_KEY`
+- `NEXT_PUBLIC_HR_API_KEY`
+- `NEXT_PUBLIC_ENGINEERING_API_KEY`
+- `NEXT_PUBLIC_ADVISOR_API_KEY`
+- `NEXT_PUBLIC_SALES_API_KEY`
+- `NEXT_PUBLIC_FINANCE_API_KEY`
+
+These are generated by `scripts/setup_local_runtime.py --write-website-env`.
+
+## Testing
+
+Run the full Python test suite from the repo root:
+
+```powershell
+python -m pytest
+```
+
+Run a specific test file:
+
+```powershell
+python -m pytest tests\test_enterprise_router.py
+```
+
+Run a specific test:
+
+```powershell
+python -m pytest tests\test_enterprise_router.py::test_manager_intervention_requires_manager_role
+```
+
+The test suite covers:
+
+- Message schema validation.
+- Message bus behavior.
+- Router client behavior.
+- Router API behavior.
+- Router storage behavior.
+- Router end-to-end flows.
+- CEO/router integration.
+- HR/router integration.
+- Engineering light-demo behavior.
+- CLI entry points.
+- Artifact APIs.
+- Thread-safe agent behavior.
+- Distribution token behavior.
+
+`pytest.ini` sets the repo root on `pythonpath` and points pytest at `tests/`.
+
+## Docker and Local LLM Notes
+
+Several agents are designed to use local LLM tooling, especially CEO and Engineering.
+
+CEO uses local Ollama endpoints:
+
+- `http://localhost:11434/api/chat`
+- `http://localhost:11434/api/generate`
+
+Default CEO model:
+
+- `mistral`
+
+Engineering uses an Ollama-compatible model through CrewAI when running in full mode.
+
+Default Engineering model env:
+
+- `OLLAMA_MODEL`
+
+Engineering default model value in code:
+
+- `ollama/deepseek-coder-v2:16b`
+
+If using Docker for Ollama, start Docker Desktop first, then start the Ollama container according to your local environment. A common local command used by this project is:
+
+```powershell
+docker start ollama-enterprise
+```
+
+This README intentionally avoids including private container configuration, private model paths, or real credentials.
+
+If Ollama is not running:
+
+- CEO model calls return a strategic-link error string rather than crashing the whole worker.
+- Engineering full mode may not work, depending on CrewAI/Ollama configuration.
+- Engineering light-demo mode can still process router messages and produce artifacts without generating code.
+
+## Environment Variables
+
+### Router Runtime
+
+`ENTERPRISE_ROUTER_BACKEND`
+
+Router storage backend. Use `sqlite` for normal local development. `mongo` is optional.
+
+`ENTERPRISE_ROUTER_DB`
+
+SQLite DB path for router persistence.
+
+`ENTERPRISE_ROUTER_ADMIN_SECRET`
+
+Admin secret for protected router admin endpoints.
+
+`ENTERPRISE_ROUTER_SHARED_SECRET`
+
+Registration request shared secret.
+
+`ENTERPRISE_ROUTER_HOST`
+
+Router API host. Default is `127.0.0.1`.
+
+`ENTERPRISE_ROUTER_PORT`
+
+Router API port. Code default is `8765`, but local demo commands often use `8000`.
+
+`ENTERPRISE_ROUTER_URL`
+
+Base URL used by agents and scripts, for example `http://localhost:8000`.
+
+`ENTERPRISE_ROUTER_API_URL`
+
+Compatibility alias for router base URL.
+
+`ENTERPRISE_ROUTER_TIMEOUT_S`
+
+HTTP timeout in seconds for `EnterpriseRouterClient`.
+
+### Agent Identity and Keys
+
+`ENTERPRISE_AGENT_NAME`
+
+Default authenticated agent name for a process.
+
+`ENTERPRISE_AGENT_API_KEY`
+
+Default API key for a process.
+
+Agent-specific keys:
+
+- `CEO_AGENT_API_KEY`
+- `PM_AGENT_API_KEY`
+- `MARKETING_AGENT_API_KEY`
+- `HR_AGENT_API_KEY`
+- `ENGINEERING_AGENT_API_KEY`
+- `ADVISOR_AGENT_API_KEY`
+- `SALES_AGENT_API_KEY`
+- `FINANCE_AGENT_API_KEY`
+- `MANAGER_AGENT_API_KEY`
+
+Compatibility aliases used in some places:
+
+- `ENTERPRISE_ROUTER_AGENT_NAME`
+- `ENTERPRISE_ROUTER_AGENT_API_KEY`
+- `NEXT_PUBLIC_CEO_API_KEY`
+- `NEXT_PUBLIC_PM_API_KEY`
+- `NEXT_PUBLIC_PRODUCT_API_KEY`
+- `NEXT_PUBLIC_MARKETING_API_KEY`
+- `NEXT_PUBLIC_HR_API_KEY`
+- `NEXT_PUBLIC_ENGINEERING_API_KEY`
+- `NEXT_PUBLIC_ADVISOR_API_KEY`
+
+### Website
+
+`NEXT_PUBLIC_API_URL`
+
+Router URL for the browser app.
+
+`NEXT_PUBLIC_ADMIN_SECRET`
+
+Admin secret used by local dashboard calls. Treat as local-only.
+
+`NEXT_PUBLIC_MANAGER_API_KEY`
+
+Manager identity key used for dashboard interventions.
+
+Other `NEXT_PUBLIC_*_API_KEY` values let the website inspect agent queues where appropriate.
+
+### Storage
+
+`ENTERPRISE_BACKLOG_DB`
+
+SQLite path for local `AgentBacklog`.
+
+`ENTERPRISE_MESSAGE_BUS_JSONL`
+
+JSONL path for local message-bus audit output.
+
+`ENTERPRISE_ARTIFACTS_DIR`
+
+Directory for markdown artifacts. Default is `<repo>/artifacts`.
+
+`MONGODB_URI`
+
+MongoDB connection string used by optional Mongo paths.
+
+`ENTERPRISE_ROUTER_MONGO_DB`
+
+Mongo database name for router Mongo backend.
+
+`ENTERPRISE_MONGO_INTER_AGENT_DB`
+
+Legacy/optional inter-agent Mongo database name.
+
+### Engineering
+
+`ENGINEERING_LIGHT_DEMO`
+
+Forces Engineering light-demo mode.
+
+`ENGINEERING_OFFLINE_DEMO_MONGO`
+
+Uses legacy Mongo polling path for Engineering. Normal runtime should use the router instead.
+
+`OUTPUT_DIR`
+
+Where Engineering full mode writes generated projects.
+
+`GITHUB_REPO_URL`
+
+Optional remote for generated Engineering output.
+
+`MAX_ITERATIONS`
+
+Maximum Engineering review/fix iterations.
+
+`OLLAMA_MODEL`
+
+Engineering model name for local Ollama/CrewAI mode.
+
+`POLL_INTERVAL_SECONDS`
+
+Polling interval for some workers.
+
+### Demo and Compatibility
+
+`ENTERPRISE_ROUTER_OFFLINE_DEMO`
+
+When set to `1`, allows explicit local `MessageBus` fallback for tests or demos. Do not use this for normal runtime.
+
+`PM_STORAGE_BACKEND`
+
+PM/Marketing storage backend. Leave unset for local file storage unless Mongo is intentionally needed.
+
+## Storage Backends
+
+### SQLite
+
+SQLite is the default and recommended local router backend.
+
+Advantages:
+
+- Easy local setup.
+- No external database required.
+- Good for demos and tests.
+- Stores router agents, queue records, leases, and audit events.
+
+### MongoDB
+
+MongoDB is optional.
+
+Use Mongo only when:
+
+- You intentionally want router persistence in Mongo.
+- You have a configured local or remote MongoDB instance.
+- You have set environment variables securely.
+
+Do not hardcode credentials in source files.
+
+### Local Files
+
+Local files are used for:
+
+- PM storage defaults.
+- Markdown artifacts.
+- Generated key helper files.
+- Optional message-bus JSONL logs.
+
+Local generated secret files should stay out of Git.
+
+## Common Workflows
+
+### Start Everything for a Demo
+
+Terminal 1:
+
+```powershell
+$env:ENTERPRISE_ROUTER_BACKEND="sqlite"
+$env:ENTERPRISE_ROUTER_DB="enterprise_router_demo.db"
+$env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
+$env:ENTERPRISE_ROUTER_PORT="8000"
+python -m enterprise_router.api
+```
+
+Terminal 2:
+
+```powershell
+$env:ENTERPRISE_ROUTER_URL="http://localhost:8000"
+$env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
+python .\scripts\setup_local_runtime.py --write-website-env
+. .\.router_keys.ps1
+python .\run_agents.py --agents all
+```
+
+Terminal 3:
+
+```powershell
+cd website
+npm run dev
+```
+
+Terminal 4:
+
+```powershell
+. .\.router_keys.ps1
+python .\scripts\initiate_router_workflow.py
+```
+
+### Inspect Audit Events
+
+```powershell
 Invoke-WebRequest -UseBasicParsing "http://localhost:8000/audit?limit=50" -Headers @{ "X-Admin-Secret" = "dev-admin-secret" }
 ```
 
-In the website:
+### Inspect Router Health
 
-- `/dashboard`: newest live artifact across all agents.
-- `/observability`: best place to see that messages were submitted, fetched, acked, or nacked.
-- `/messages`: shows the MANAGER queue only.
-- `/agents/<agent>`: shows that agent's live inbound queue if the message has not already been fetched, and that agent's newest artifact under `Agent Outputs`.
+```powershell
+Invoke-WebRequest -UseBasicParsing "http://localhost:8000/health"
+```
 
-Important: once a worker fetches and ack/nacks a message, it leaves the queue. Use audit and artifacts to see completed work. The current website is not a full conversation transcript.
+### Inspect Worker Availability
 
-### What Is Live vs. Mock
+```powershell
+python .\run_agents.py --agents all --list
+```
 
-Live today:
+### Submit a Dry-Run Seed Preview
 
-- Router health (`/health`).
-- Router audit log (`/audit`).
-- Queue views (`/queue/{recipient}`).
-- Markdown artifacts (`/artifacts`) from CEO, PM, HR, and Engineering light/full demo paths.
-- Router throughput charts derived from audit events.
-- Manager interventions that submit real router messages.
+```powershell
+python .\scripts\initiate_router_workflow.py --dry-run
+```
 
-Still mock/demo today:
+## Troubleshooting
 
-- Revenue forecast.
-- Budget allocation.
-- Sales pipeline.
-- Capacity/load percentages.
-- Workflow progress cards.
-- Most KPI cards.
+### `403 Invalid API key`
 
-Those business visualizations need agents to emit structured business metric events, or the router needs a new `/metrics` endpoint. Right now the router knows message lifecycle data; it does not automatically know revenue, budget, ROI, or staffing capacity.
+Likely cause:
 
-### How Autonomy Works Right Now
+- The router was restarted or agents were re-registered, but the worker or website still has stale keys.
 
-Autonomy is currently message-driven and rule/handler-driven:
+Fix:
 
-- The initiation script submits starter messages as `CEO`.
-- The router stores messages, validates auth/allowlists, computes priority, leases work, and records audit events.
-- Workers poll their own queue.
-- Each worker decides what to do based on `task_type`.
-- Some workers submit follow-up messages. Example: PM receives `DEFINE_Q2_ROADMAP`, creates backlog/project data, then sends `LAUNCH_CAMPAIGN` and `PM_REPORT` to Marketing.
-- Marketing may send `BUDGET_APPROVAL` to CEO or `CAMPAIGN_LAUNCHED` to Sales.
+```powershell
+python .\scripts\setup_local_runtime.py --write-website-env
+. .\.router_keys.ps1
+```
 
-The router does not decide business strategy. It routes and records messages. The agents decide their next actions inside their task handlers.
+Then restart affected workers and restart `npm run dev`.
 
-### Onboarding Page
+### `403 Task type ... is not allowed`
 
-Onboarding is now a real backend trigger. The final onboarding step sends a `CEO_REASONING_LOOP` message to the router with the company name, one-liner, ideal customer, 90-day goal, selected departments, and a run id.
+Likely cause:
 
-The backend system still requires:
+- The agent registration allowlist is stale or missing that task type.
 
-1. The router is running.
-2. Local keys are generated.
-3. Agent workers are running.
-4. Onboarding, website chat, or `scripts/initiate_router_workflow.py` submits starter messages.
+Fix:
 
-If you already skipped onboarding and the dashboard opens immediately, send a CEO instruction from `/chat` or run the initiation script.
+```powershell
+python .\scripts\setup_local_runtime.py --write-website-env
+```
 
-Common local issues:
+Restart workers afterward.
 
-- `403 Invalid API key`: the website or agent process is using a stale key. Re-run `scripts/setup_local_runtime.py --write-website-env`, reload `.router_keys.ps1` or `.router_keys.cmd`, and restart the affected process.
-- `403 Task type 'MANAGER_INTERVENTION' is not allowed`: the agent was registered with an old allowlist. Re-run `scripts/setup_local_runtime.py --write-website-env` against the running router.
-- `WinError 10048` on port `8000`: another router is already running on that port. Stop it or use a different `ENTERPRISE_ROUTER_PORT` and update `NEXT_PUBLIC_API_URL` / `ENTERPRISE_ROUTER_URL` to match.
-- Website still shows old keys after editing `.env.local`: restart `npm run dev`; Next.js reads environment variables at server startup.
-- PM/Marketing try to connect to `localhost:27017`: make sure `PM_STORAGE_BACKEND` is not set to `mongo`, or run MongoDB intentionally.
+### Port conflict on `8000`
 
-## Distribution tokens (CEO-managed)
+Likely cause:
 
-Governed **scenarios** throttle how many times an agent can complete a **token-gated** message on the bus. Each scenario has a **`cost_per_send`**: one successful `MessageBus.send` that names that scenario in the envelope consumes that many tokens from the **sender's** balance.
+- Another router or service is already running on port 8000.
 
-### How a send picks a scenario
+Fix:
 
-The bus reads (first match wins):
+- Stop the existing process, or choose another port.
+- If you change the router port, update `ENTERPRISE_ROUTER_URL` and `NEXT_PUBLIC_API_URL`.
 
-1. `context["distribution_scenario"]`
-2. `context["prompt_scenario"]`
+### Website still uses old keys
 
-If neither is set, or the string is **not** a registered scenario, the send is **not** charged (normal delivery).
+Likely cause:
 
-If enforcement is on and the scenario **is** registered, the sender must have enough balance or the send raises `DistributionTokenError` and is **not** persisted.
+- Next.js reads env values at server startup.
 
-### Costs, per-agent caps, and total caps (how the code works)
+Fix:
 
-| Concept | Meaning in code |
-|--------|------------------|
-| **Task / scenario** | A registered scenario id (string), e.g. `STANDARD_DELEGATION`. |
-| **Token cost per send** | `cost_per_send` for that scenario (minimum **1**). Each gated send deducts this from the sender's balance for that scenario. |
-| **Per-agent cap** | Not a separate limit: it is whatever balance the CEO **minted** or **transferred** to that agent for that scenario. More sends are allowed only if the CEO increases that balance. |
-| **Total cap (system-wide for one scenario)** | The **sum of all tokens in existence** for that scenario: CEO **mints** into one or more holders; tokens are only destroyed by **consumption** on send. There is no second hidden pool - the minted amount is the supply ceiling until the CEO mints again. |
+- Stop and restart `npm run dev`.
 
-**Simplest "baseline" task:** one governed bus message (one delivery attempt) for scenario `STANDARD_DELEGATION` with default `cost_per_send = 1` costs **1 token** from the sender's balance for `STANDARD_DELEGATION`.
+### PM or Marketing tries to connect to MongoDB
 
-### Reference allotment (example policy)
+Likely cause:
 
-The table below is a **project default you can implement** with `CeoDistributionTokenRegistry` + `CeoAgent.mint_distribution_tokens` / `assign_distribution_tokens`. Numbers are not hardcoded; they document the intended budget.
+- `PM_STORAGE_BACKEND=mongo` is set.
 
-**Scenario: `STANDARD_DELEGATION`** - routine delegations and cross-agent routing that should stay cheap.
+Fix:
 
-| Agent (holder) | Allotted tokens (starting balance) | Notes |
-|----------------|-------------------------------------|--------|
-| CEO | 30 | Executive broadcasts and top-level routing |
-| PM | 25 | Roadmap and coordination |
-| Engineering | 20 | Build / technical delegations |
-| Marketing | 15 | Campaign and messaging handoffs |
-| HR | 10 | Internal people workflows |
-| Sales | 10 | Pipeline and customer-facing handoffs |
-| Finance | 10 | Budget and approval threads |
-| UI | 10 | Design handoffs |
+- Unset `PM_STORAGE_BACKEND` for local file storage, or intentionally start/configure MongoDB.
 
-- **`cost_per_send` for `STANDARD_DELEGATION`:** **1** token per gated send.
-- **Total minted supply (cap) for this scenario:** **130** (= sum of the column above). That is the maximum number of token **units** that can ever be spent **if the CEO never mints again**; each send spends `cost_per_send` (so up to **130** successful gated sends at cost 1, distributed by who still has balance).
-- **Per-agent cap:** each row's allotment is that agent's **maximum spend** for this scenario until the CEO mints more to them or transfers tokens.
+### Engineering starts in light-demo mode
 
-**Scenario: `EXECUTIVE_BROADCAST`** (optional, higher impact) - fewer, more expensive sends.
+Likely cause:
 
-| Agent | Allotted tokens |
-|-------|-----------------|
-| CEO | 12 |
-| PM | 3 |
+- `crewai` or `crewai_tools` is not installed.
 
-- **`cost_per_send`:** **3** (each gated send burns 3 tokens).
-- **Total minted supply for this scenario:** **15** token-units -> at most **5** gated sends if only CEO sends (`15 / 3`), or a mix of sends as long as balances allow.
+Fix:
 
-### Wiring (summary)
+- Install full Engineering dependencies if full code generation is needed.
+- Otherwise, light-demo mode is acceptable for router and artifact demos.
 
-- Create `CeoDistributionTokenRegistry(executive_name="CEO")` and attach it to `CeoAgent`. Token-gated local `MessageBus` examples are offline/demo-only; runtime agent delivery still goes through the Enterprise Router.
-- CEO: `register_distribution_scenario`, `mint_distribution_tokens` (total supply), `assign_distribution_tokens` (per-agent rows in the table).
-- Agents: include `distribution_scenario` or `prompt_scenario` in `context` only when that send should count against the budget.
+### Queue page looks empty after submitting work
 
-## Pseoudocode of CEO Flow
+Likely cause:
 
-    PROCEDURE Execute_CEO_Reasoning_Loop(IncomingEvent)
-    
-        CurrentContext <- Retrieve_Agent_Memory()
-        CompanyState <- Fetch_Dashboard_KPIs()
-        
-        PromptInput <- Combine_Data(IncomingEvent, CurrentContext, CompanyState)
-        
-        ReasoningResponse <- Prompt_LLM(PromptInput, "JSON_Format")
-        
-        ParsedPlan <- Extract_Plan(ReasoningResponse)
-        
-        Save_To_Memory(ParsedPlan.Thought)
-        
-        ActionResults <- Initialize_Empty_List()
-        
-        FOR EACH Action IN ParsedPlan.Actions DO
-        
-            SWITCH Action.Name DO
-            
-                CASE "DelegateTask":
-                    Result <- Route_To_Agent(Action.Parameters.Department, Action.Parameters.Directive)
-                    Append Result TO ActionResults
-                    
-                CASE "ReplanBudget":
-                    Result <- Adjust_Financial_Parameters(Action.Parameters)
-                    Append Result TO ActionResults
-                    
-                CASE "SummarizeCycle":
-                    Result <- Generate_Executive_Report(Action.Parameters)
-                    Append Result TO ActionResults
-                    
-                DEFAULT:
-                    Result <- Log_Unknown_Action(Action.Name)
-                    Append Result TO ActionResults
-                    
-            END SWITCH
-            
-        END FOR
-        
-        IF Requires_Further_Reasoning(ActionResults) IS TRUE THEN
-            RETURN Execute_CEO_Reasoning_Loop(ActionResults)
-        END IF
-        
-        Update_Dashboard_Status("Idle", ParsedPlan.Thought)
-        
-        FinalResponse <- Prompt_LLM_For_Response(ActionResults)
-        
-        Save_To_Memory(IncomingEvent, FinalResponse)
-        
-        RETURN FinalResponse
+- A worker fetched and acked/nacked the message quickly.
 
-    END PROCEDURE
+Fix:
 
-## Pseudocode of Advisor Agent (Feedback Loop)
-    PROCEDURE Execute_Advisor_Verification(ProposedPlan)
+- Check `/observability` for audit events.
+- Check artifacts for completed output.
 
-    CompanyState <- Fetch_Dashboard_KPIs()
-    StrategicGoals <- Retrieve_Core_Directives()
-    
-    RiskAssessment <- Calculate_Plan_Risk(ProposedPlan, CompanyState)
-    
-    PromptInput <- Combine_Data(ProposedPlan, CompanyState, StrategicGoals, RiskAssessment)
-    
-    AdvisorResponse <- Prompt_LLM(PromptInput, "JSON_Format")
-    
-    ParsedFeedback <- Extract_Feedback(AdvisorResponse)
-    
-    Save_To_Audit_Log(ProposedPlan, ParsedFeedback)
-    
-    IF ParsedFeedback.IsApproved EQUALS TRUE THEN
-        RETURN Construct_Approval(ParsedFeedback.Notes)
-    ELSE
-        RETURN Construct_Rejection(ParsedFeedback.Critique, ParsedFeedback.SuggestedModifications)
-    END IF
+## Security and Privacy Notes
 
-END PROCEDURE
+Do not commit:
 
-## Simulation Test: Process & Goals
+- `.router_keys.ps1`
+- `.router_keys.cmd`
+- `website/.env.local`
+- Real API keys.
+- Real admin secrets.
+- Real MongoDB credentials.
+- Private model credentials.
+- Generated files that contain sensitive customer or company information.
 
-The `standard_scenario_test.py` script acts as our primary integration test for the entire multi-agent architecture. It simulates a high-stakes corporate initiative to verify that our internal agent economy, message routing, and persistence layers are working in harmony.
+This README uses local development placeholders only.
 
-### Primary Goals of the Test
-1. **Verify the Token Economy:** Ensure the `CeoDistributionTokenRegistry` correctly mints, allocates, and deducts tokens. The test verifies that the CEO can use standard tokens for individual delegations and successfully execute a higher-cost `EXECUTIVE_BROADCAST` token for the final decision.
-2. **Test Asynchronous Routing:** Confirm that the Enterprise Router correctly routes direct messages from the CEO to specific departments, as well as peer-to-peer messages (e.g., HR and Marketing sending cost data directly to Finance without CEO intervention).
-3. **Validate Schema Compliance:** Ensure every agent communicates using the strict JSON envelope schema without triggering formatting errors.
-4. **Confirm Router Persistence:** Verify that every transaction is recorded by the Enterprise Router storage backend. SQLite is the local default; MongoDB is supported only behind the router as an optional queue/audit backend.
+Operational safety practices:
 
-### The Execution Process
-When the simulation is triggered, the following workflow occurs automatically:
-1. **Central Bank Initialization:** The CEO mints a total supply of standard and broadcast tokens, transferring specific budgets to each department.
-2. **The Catalyst:** The CEO broadcasts initial directives to PM, Engineering, HR, Marketing, Sales, and Finance to begin the project.
-3. **Departmental Processing:** Agents process their directives. Sub-routines trigger HR and Marketing to send financial estimates to the Finance Agent.
-4. **Aggregation:** Finance calculates a strict ROI based on those inputs and routes the forecast back to the CEO. 
-5. **Executive Decision:** The CEO ingests the final data, verifies the minimum ROI threshold is met, and consumes an `EXECUTIVE_BROADCAST` token to announce the final "GO" decision.
+- Use the router instead of direct database writes for runtime communication.
+- Keep local demo secrets local.
+- Rotate generated keys if they are accidentally exposed.
+- Prefer SQLite for local demos unless Mongo is specifically required.
+- Avoid putting secrets in screenshots, artifacts, logs, or chat transcripts.
+- Treat artifact markdown as user-visible output.
 
----
+The artifact API is designed to return public-safe metadata and content rather than arbitrary filesystem access.
 
-## Running and Verifying in Git Bash
+## Developer Notes
 
-If you are using Git Bash (or any standard Linux/Mac terminal), you can run the simulation and verify the outputs entirely via the command line.
+### Adding a New Agent
 
-### Run All Simulations
-Make sure your virtual environment is activated, then run the tests as Python modules using pytest:
+To add a new runtime agent:
 
-`python -m pytest`
+1. Create the agent worker module.
+2. Give it a canonical router name.
+3. Register the agent in `scripts/bootstrap_router_agents.py`.
+4. Add its API key env mapping.
+5. Add it to `run_agents.py`.
+6. Add a `run_single_agent.py` branch if needed.
+7. Use `Message.create(...)` and `agent_transport.submit(...)` for outbound messages.
+8. Fetch one message at a time.
+9. Ack on success and nack on failure.
+10. Add tests near the changed behavior.
+11. Update this README.
 
-### Run Specific Simulation
-For running a specific simulation, run the test as a Python module:
+### Adding a New Task Type
 
-`python -m standard_scenario_test`
+To add a task type:
 
-# Instructions and Necessities
+1. Add the handler to the recipient agent.
+2. Add the task type to that recipient's router allowlist.
+3. Ensure the sender uses the standard message envelope.
+4. Add correlation context such as `run_id` and `source_message_id`.
+5. Add or update tests.
+6. Re-run setup against the active router so the allowlist is refreshed.
 
-## Necessities
-- IDE with python (preferably **VS Code**)
-- **Ollama** and **Mistral**
-- **Docker**
+### Runtime Rule of Thumb
 
-## Instructions
-What to do to start working and pick up exactly where you left off:
+Use:
 
-- Open **Docker Desktop** (make sure it turns green)
-- Activate your env: `source .venv/Scripts/activate`
-- Wake up the AI: `docker start ollama-enterprise`
+- `EnterpriseRouterClient` for direct router client operations.
+- `agent_transport` for shared agent send/fetch/ack/nack helpers.
+- `Message.create(...)` for new envelopes.
+- Router audit and artifacts for completed-work visibility.
 
-What to do to end your work session
+Avoid:
 
-- Deactivate you env: `deactivate`
+- Directly writing another agent's queue.
+- Treating local backlog as the shared source of truth.
+- Adding new runtime paths that bypass the router.
+- Committing generated secret files.
+
+## Graphify Architecture Notes
+
+The `graphify-out` report identified several core hubs and communities. The most connected concepts were:
+
+- `Message`
+- `EnterpriseRouterClient`
+- `AgentRecord`
+- `RegistrationRequest`
+- `CeoAgent`
+- `EnterpriseRouter`
+- `AgentApiKeyRecord`
+- `AgentBacklog`
+- `MessageBus`
+- `SQLiteStorage`
+
+This matches the practical architecture:
+
+- `Message` is central because every agent and transport path needs a shared envelope.
+- `EnterpriseRouterClient` is central because agents, tests, and compatibility helpers use it to reach the router.
+- `EnterpriseRouter` is central because it owns queueing, auth, access control, and audit.
+- `AgentRecord` and `AgentApiKeyRecord` are central because the router must know who an agent is and whether it is allowed to act.
+- `SQLiteStorage` is central because it is the default local persistence backend.
+- `AgentBacklog` remains connected because agents still record local execution history, even though the router is the live queue of record.
+
+Graphify also grouped the repository into communities such as:
+
+- Enterprise Router API.
+- Router Client.
+- Agent Transport.
+- CEO Agent Core.
+- PM Agent Tools.
+- Engineering Agent.
+- HR Agent.
+- Marketing Agent.
+- Website API Client.
+- Live Metrics.
+- Run Agents CLI.
+- Router Storage.
+- Message Schema.
+- Router E2E Tests.
+
+Those communities informed this README structure. The documentation intentionally follows the same shape: router first, message contract second, agents third, website integration fourth, and setup/testing after the architecture is clear.
 

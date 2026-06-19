@@ -20,6 +20,7 @@ demo_concurrent_topics.db
 enterprise_backlog.db
 enterprise_message_bus.jsonl
 enterprise_router.db
+enterprise_router_demo.db
 data/
 
 # Visual Studio
@@ -32,6 +33,7 @@ data/
 .env
 .router_keys.ps1
 .router_keys.cmd
+website/.env.local
 website/.env.local.generated
 
 # Ignore the runtime audit log
