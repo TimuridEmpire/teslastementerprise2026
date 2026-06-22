@@ -293,14 +293,14 @@ These names must match registration exactly.
 
 | Agent | Router name | Current inbound task types |
 |---|---|---|
-| CEO | `CEO` | `CEO_PING`, `CEO_CHAT`, `CEO_REASONING_LOOP`, `CEO_METRICS`, `MINT_TOKENS`, `BUDGET_APPROVAL`, `MANAGER_INTERVENTION`, `IMPLEMENT_FEATURE`, `STRATEGY_REVIEW_RESULT` |
-| PM | `PM` | `DEFINE_Q2_ROADMAP`, `REQUEST_FEATURES`, `MANAGER_INTERVENTION` |
-| Marketing | `Marketing` | `LAUNCH_CAMPAIGN`, `PM_REPORT`, `MANAGER_INTERVENTION` |
-| HR | `HR` | `TALENT_REALLOCATION`, `MANAGER_INTERVENTION` |
-| Engineering | `Engineering` | `IMPLEMENT_FEATURE`, `FEATURE_RESPONSE`, `MANAGER_INTERVENTION` |
+| CEO | `CEO` | `CEO_PING`, `CEO_CHAT`, `CEO_REASONING_LOOP`, `CEO_METRICS`, `PM_REPORT`, `ARTIFACT_PUBLISHED`, `AGENT_ARTIFACT_READY`, `MINT_TOKENS`, `BUDGET_APPROVAL`, `BUDGET_ALERT`, `MANAGER_INTERVENTION`, `IMPLEMENT_FEATURE`, `STRATEGY_REVIEW_RESULT`, `TOKEN_TOPUP_NOTIFICATION`, `PIPELINE_REPORT` |
+| PM | `PM` | `DEFINE_Q2_ROADMAP`, `REQUEST_FEATURES`, `CEO_STRATEGY_DIRECTIVE`, `FEATURE_RESPONSE`, `MANAGER_INTERVENTION` |
+| Marketing | `Marketing` | `LAUNCH_CAMPAIGN`, `PM_REPORT`, `THREAD_ALLOCATION`, `MANAGER_INTERVENTION` |
+| HR | `HR` | `TALENT_REALLOCATION`, `THREAD_ALLOCATION`, `MANAGER_INTERVENTION` |
+| Engineering | `Engineering` | `IMPLEMENT_FEATURE`, `FEATURE_RESPONSE`, `THREAD_ALLOCATION`, `MANAGER_INTERVENTION` |
 | Strategic Advisor | `Strategic Advisor` | `STRATEGY_REVIEW_REQUEST`, `CEO_PROPOSAL_FOR_REVIEW`, `MANAGER_INTERVENTION` |
-| Sales | `Sales` | `CAMPAIGN_LAUNCHED`, `MANAGER_INTERVENTION` |
-| Finance | `Finance` | `BUDGET_APPROVAL`, `MANAGER_INTERVENTION` |
+| Sales | `Sales` | `CAMPAIGN_LAUNCHED`, `QUALIFY_LEAD`, `GENERATE_PITCH`, `CLOSE_DEAL`, `UPSELL`, `PIPELINE_REPORT`, `DEMO_REQUEST`, `MANAGER_INTERVENTION` |
+| Finance | `Finance` | `BUDGET_APPROVAL`, `GENERATE_PL_REPORT`, `CASH_FLOW_FORECAST`, `REVENUE_LOG`, `AUDIT_REPORT`, `MONTE_CARLO_SIM`, `TOKEN_TOPUP_REQUEST`, `TOKEN_BALANCE_QUERY`, `MANAGER_INTERVENTION` |
 
 If a team needs a new inbound task type, update the registration allowlist in `scripts/setup_local_runtime.py` and `scripts/bootstrap_router_agents.py` before submitting that message type.
 
@@ -355,6 +355,33 @@ If a team needs a new inbound task type, update the registration allowlist in `s
 - Write an advisory artifact with assessment, alignment, risks, and recommended action.
 - Send `STRATEGY_REVIEW_RESULT` to `CEO` or the original sender.
 - Ack after result submission succeeds.
+
+### Sales
+
+- Pull one message at a time with `EnterpriseRouterClient.fetch_next("Sales")`.
+- Handle `CAMPAIGN_LAUNCHED`, `QUALIFY_LEAD`, `GENERATE_PITCH`, `CLOSE_DEAL`, `UPSELL`, `PIPELINE_REPORT`, and `DEMO_REQUEST`.
+- Write a sales artifact for each handled task: campaign intake, qualification, pitch, deal, upsell, pipeline, or demo.
+- When a deal closes won, send `REVENUE_LOG` to `Finance` through the router.
+- For large deal approvals, send a CEO approval/request message instead of bypassing the router.
+- Ack only after artifact publication and outbound Finance/CEO message submission succeeds.
+
+### Finance
+
+- Pull one message at a time with `EnterpriseRouterClient.fetch_next("Finance")`.
+- Handle budget, revenue, forecast, audit, and token requests.
+- Write a finance artifact for each completed report or decision.
+- Finance owns routine distribution-token top-ups and balance queries through `FinanceTokenManager`.
+- Notify CEO with `TOKEN_TOPUP_NOTIFICATION` for visibility, but do not require CEO to mint routine operating tokens.
+- Ack only after the artifact and any CEO notification are submitted.
+
+## Token Ownership Contract
+
+There are different token concepts in this repo. Keep them separate:
+
+- Router API keys authenticate agents to the Enterprise Router. They are not budget tokens.
+- Finance owns routine operating/distribution tokens: top-ups, balances, LLM cost tracking, and budget-related token decisions. Use `TOKEN_TOPUP_REQUEST` and `TOKEN_BALANCE_QUERY` to `Finance`.
+- CEO owns strategic/executive governance tokens only when the workflow is explicitly an executive policy or scenario decision, such as `MINT_TOKENS`. Do not use CEO minting for ordinary agent budget exhaustion.
+- Agents that run out of operating tokens should ask Finance, not HR or MongoDB directly. Finance can notify CEO FYI after approving or denying the request.
 
 ## Common Mistakes To Avoid
 

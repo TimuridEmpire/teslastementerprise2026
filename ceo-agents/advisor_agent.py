@@ -1,5 +1,7 @@
 from typing import Any, Dict
 
+from enterprise_router.agent_artifacts import write_agent_artifact
+
 from agent_logger import get_agent_logger, log_inter_agent_message
 from agent_transport import AGENT_CEO, make_envelope, submit
 from enterprise_router_client import EnterpriseRouterClient
@@ -59,6 +61,32 @@ class AdvisorAgent(ThreadSafeAgentMixin):
             is_aligned = False
             feedback = "WARNING: Proposed hardware manufacturing violates the core software focus strategy."
 
+        result_payload = {
+            "is_aligned": is_aligned,
+            "assessment": feedback,
+            "recommended_action": "PROCEED" if is_aligned else "REVISE",
+        }
+        artifact = write_agent_artifact(
+            self.name,
+            title="Strategic review",
+            body=(
+                f"## Assessment\n\n{feedback}\n\n"
+                f"## Recommendation\n\n{result_payload['recommended_action']}\n\n"
+                "## Proposal\n\n```json\n"
+                + __import__("json").dumps(proposed_action, indent=2, default=str)
+                + "\n```"
+            ),
+            artifact_type="strategy_review",
+            metadata={
+                "source": "advisor_agent",
+                "original_task": task_type,
+                "is_aligned": is_aligned,
+            },
+            source_message_id=proposal.id,
+            source_task_type=task_type,
+        )
+        result_payload["artifact_id"] = artifact.get("artifact_id")
+
         advisory_response = make_envelope(
             sender=self.name,
             recipient=proposal.sender or AGENT_CEO,
@@ -67,11 +95,7 @@ class AdvisorAgent(ThreadSafeAgentMixin):
                 "original_task": task_type,
                 "review_cycle": "pre-execution",
             },
-            payload={
-                "is_aligned": is_aligned,
-                "assessment": feedback,
-                "recommended_action": "PROCEED" if is_aligned else "REVISE",
-            },
+            payload=result_payload,
             status="done",
         )
 

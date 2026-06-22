@@ -1,4 +1,4 @@
-"""Run one Enterprise Router-backed agent as a polling worker.
+﻿"""Run one Enterprise Router-backed agent as a polling worker.
 
 This file wraps the agents that do not already have their own long-running
 entrypoint. It expects the caller to provide:
@@ -40,6 +40,8 @@ CANONICAL_NAMES = {
     "advisor": "Strategic Advisor",
     "strategic-advisor": "Strategic Advisor",
     "strategic_advisor": "Strategic Advisor",
+    "sales": "Sales",
+    "finance": "Finance",
 }
 
 
@@ -98,7 +100,7 @@ def run_advisor(interval: float) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one Enterprise Router-backed agent worker.")
-    parser.add_argument("agent", help="One of: CEO, PM, Marketing, HR, Engineering, Advisor")
+    parser.add_argument("agent", help="One of: CEO, PM, Marketing, HR, Engineering, Advisor, Sales, Finance")
     parser.add_argument("--poll-interval", type=float, default=2.0)
     args = parser.parse_args()
 
@@ -130,6 +132,14 @@ def main() -> int:
 
     if agent_name == "Strategic Advisor":
         run_advisor(args.poll_interval)
+        return 0
+
+    if agent_name == "Finance":
+        runpy.run_path(str(ROOT / "finance-agents" / "finance_agent.py"), run_name="__main__")
+        return 0
+
+    if agent_name == "Sales":
+        runpy.run_path(str(ROOT / "sales-agents" / "sales_agent.py"), run_name="__main__")
         return 0
 
     raise SystemExit(f"No worker is implemented for {agent_name}.")

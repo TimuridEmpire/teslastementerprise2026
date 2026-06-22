@@ -43,3 +43,6 @@ graphify-out/
 
 # Local Enterprise Router SQLite state
 enterprise_router_demo.db
+
+# Local Sales/Finance SQLite tool state
+db/*.db

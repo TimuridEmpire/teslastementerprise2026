@@ -2,8 +2,8 @@
 
 Run this after the router is running and after the agents have been registered.
 The launcher starts only agents that have both an implementation and an API key.
-Sales and Finance are registered names in the router/website, but this codebase
-currently has no worker file for them, so this launcher reports them as missing.
+Sales and Finance now run through Enterprise Router-backed workers as part of
+the partial live demo path.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ AGENTS: dict[str, AgentSpec] = {
     "hr": AgentSpec("HR", "HR", ("HR_AGENT_API_KEY", "NEXT_PUBLIC_HR_API_KEY")),
     "engineering": AgentSpec("Engineering", "Engineering", ("ENGINEERING_AGENT_API_KEY", "NEXT_PUBLIC_ENGINEERING_API_KEY"), required_modules=("crewai", "crewai_tools")),
     "advisor": AgentSpec("Strategic Advisor", "Strategic Advisor", ("ADVISOR_AGENT_API_KEY", "STRATEGIC_ADVISOR_AGENT_API_KEY", "NEXT_PUBLIC_ADVISOR_API_KEY")),
-    "sales": AgentSpec("Sales", "Sales", ("SALES_AGENT_API_KEY", "NEXT_PUBLIC_SALES_API_KEY"), implemented=False),
-    "finance": AgentSpec("Finance", "Finance", ("FINANCE_AGENT_API_KEY", "NEXT_PUBLIC_FINANCE_API_KEY"), implemented=False),
+    "sales": AgentSpec("Sales", "Sales", ("SALES_AGENT_API_KEY", "NEXT_PUBLIC_SALES_API_KEY")),
+    "finance": AgentSpec("Finance", "Finance", ("FINANCE_AGENT_API_KEY", "NEXT_PUBLIC_FINANCE_API_KEY")),
 }
 
 DEFAULT_ORDER = ("ceo", "pm", "marketing", "hr", "engineering", "advisor", "sales", "finance")

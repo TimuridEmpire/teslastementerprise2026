@@ -1,6 +1,8 @@
 import os
+import json
 from typing import Dict, Any, Optional
 
+from enterprise_router.agent_artifacts import write_agent_artifact
 from agent_transport import (
     AGENT_CEO,
     AGENT_SALES,
@@ -105,12 +107,33 @@ class MarketingAgent:
     def handle_pm_report(self, msg: Dict[str, Any]) -> None:
         self.logger.info(f"MarketingAgent: handling PM_REPORT {msg.get('id')}")
         project_id = msg.get("context", {}).get("project_id")
+        payload = msg.get("payload", {})
         storage.add_project_event(
             source=self.name,
             event_type="pm_report_received",
             project_id=project_id,
             message_id=msg.get("id"),
-            details=msg.get("payload", {}),
+            details=payload,
+        )
+        body = (
+            "## PM report intake\n\n"
+            "Marketing received a PM report and recorded it for campaign planning.\n\n"
+            "## Payload\n\n```json\n"
+            + json.dumps(payload, indent=2, default=str)
+            + "\n```"
+        )
+        write_agent_artifact(
+            self.name,
+            title="PM report received",
+            body=body,
+            artifact_type="marketing_pm_report",
+            metadata={
+                "source": "marketing_agent",
+                "project_id": project_id,
+                "sender": msg.get("sender"),
+            },
+            source_message_id=msg.get("id"),
+            source_task_type=msg.get("task_type"),
         )
 
     def handle_launch_campaign(self, msg: Dict[str, Any]) -> None:
