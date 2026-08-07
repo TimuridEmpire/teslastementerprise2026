@@ -20,8 +20,10 @@ import logging
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.dirname(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for path in (ROOT, os.path.dirname(__file__)):
+    if path and path not in sys.path:
+        sys.path.insert(0, path)
 
 # ── Repo imports (use existing repo files, not external packages) ─────────────
 from agents.base_agent import BaseAgent, CEO_APPROVAL_THRESHOLD_USD

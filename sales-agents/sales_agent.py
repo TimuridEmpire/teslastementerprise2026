@@ -15,9 +15,10 @@ import logging
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "finance-agents"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for path in (ROOT, os.path.dirname(__file__), os.path.join(ROOT, "finance-agents")):
+    if path and path not in sys.path:
+        sys.path.insert(0, path)
 
 from agents.base_agent import BaseAgent
 from enterprise_router.agent_artifacts import write_agent_artifact

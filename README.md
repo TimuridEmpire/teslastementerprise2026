@@ -51,13 +51,10 @@ Current implemented runtime workers:
 - `HR`
 - `Engineering`
 - `Strategic Advisor`
-
-Registered but not implemented as long-running workers in this codebase:
-
 - `Sales`
 - `Finance`
 
-The website knows about Sales and Finance because they are part of the intended enterprise model, but `run_agents.py` skips them because this repository does not currently include active worker implementations for those departments.
+Sales and Finance are now implemented as router-backed workers in this repository. They are launched by `run_agents.py` and `run_single_agent.py` alongside the other departments, and they publish artifacts and follow-up messages through the Enterprise Router rather than relying on private local queues.
 
 ## Core Architecture
 
@@ -478,37 +475,41 @@ Important Advisor outputs:
 
 Router name: `Sales`
 
-Role: intended sales follow-through for campaigns and customer-facing activity.
+Role: sales follow-through for campaigns, pipeline management, lead qualification, and deal progression.
 
 Current state:
 
 - Sales is registered by setup scripts.
 - The website can display Sales as an enterprise participant.
-- This repository does not currently include an active Sales worker implementation used by `run_agents.py`.
+- Sales now has a live router-backed worker implementation used by `run_agents.py` and `run_single_agent.py`.
+- The agent handles `CAMPAIGN_LAUNCHED`, `QUALIFY_LEAD`, `GENERATE_PITCH`, `CLOSE_DEAL`, `UPSELL`, `PIPELINE_REPORT`, and `DEMO_REQUEST` messages.
+- It writes artifacts to the shared artifacts directory and submits follow-up messages such as `REVENUE_LOG` to Finance.
 
-Expected future behavior:
+Behavior:
 
-- Consume `CAMPAIGN_LAUNCHED`.
-- Convert campaign outputs into pipeline or lead activity.
-- Report outcomes back to CEO, PM, Marketing, or Finance.
+- Qualifies leads and persists pipeline and deal data in a local SQLite-backed CRM store.
+- Generates pitches and closes deals in a deterministic local workflow even if the local LLM service is unavailable.
+- Publishes structured artifacts for observability and downstream workflow use.
 
 ### Finance Agent
 
 Router name: `Finance`
 
-Role: intended budget, forecast, ROI, and approval support.
+Role: budget, forecast, ROI, approval support, and operating-token governance.
 
 Current state:
 
 - Finance is registered by setup scripts.
 - The website can display Finance as an enterprise participant.
-- This repository includes some finance-related modules and tests, but `run_agents.py` marks Finance as missing because there is no active runtime worker wired into the launcher.
+- Finance now has a live router-backed worker implementation used by `run_agents.py` and `run_single_agent.py`.
+- The agent handles `GENERATE_PL_REPORT`, `BUDGET_APPROVAL`, `CASH_FLOW_FORECAST`, `REVENUE_LOG`, `AUDIT_REPORT`, `MONTE_CARLO_SIM`, `TOKEN_TOPUP_REQUEST`, and `TOKEN_BALANCE_QUERY` messages.
+- It writes finance artifacts and can send budget or token-related follow-up messages to the CEO and other agents.
 
-Expected future behavior:
+Behavior:
 
-- Consume budget and approval tasks.
-- Calculate ROI and financial risk.
-- Return finance reports to CEO or PM.
+- Maintains a local SQLite ledger for revenue, expenses, budgets, and token-cost tracking.
+- Produces P&L, cash-flow, audit, and Monte Carlo reports.
+- Uses a deterministic fallback path when the local LLM service is unavailable, keeping the workflow operational for demos and local testing.
 
 ### Manager
 
@@ -985,8 +986,8 @@ Expected behavior:
 - Strategic Advisor starts if `ADVISOR_AGENT_API_KEY` is loaded.
 - Engineering starts in full mode if CrewAI dependencies are installed.
 - Engineering starts in light-demo mode if CrewAI packages are missing.
-- Sales is skipped because no runtime worker exists.
-- Finance is skipped because no runtime worker exists.
+- Sales starts when the `SALES_AGENT_API_KEY` env var is present.
+- Finance starts when the `FINANCE_AGENT_API_KEY` env var is present.
 
 To check availability without starting workers:
 

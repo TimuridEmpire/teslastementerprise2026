@@ -188,6 +188,67 @@ class BaseAgent(ABC):
 
     # ─── LLM Interface ──────────────────────────────────────────────────────
 
+    def _fallback_response(
+        self,
+        task_type: str,
+        op: str,
+        preferred_role: str,
+        user_message: str,
+    ) -> str:
+        lowered = (task_type + " " + op + " " + preferred_role + " " + user_message).lower()
+        if "qualify" in lowered or "pipeline" in lowered:
+            return json.dumps(
+                {
+                    "strategy": "Fallback qualification heuristic",
+                    "next_step": "Manual review recommended",
+                    "priority": "medium",
+                    "fallback": True,
+                }
+            )
+        if "pitch" in lowered:
+            return json.dumps(
+                {
+                    "enhanced_pitch": "Fallback pitch generated offline while the local model was unavailable.",
+                    "subject_line": "Follow-up discussion",
+                    "objection_response": "We can address concerns directly in a live conversation.",
+                    "confidence_score": 0.55,
+                    "fallback": True,
+                }
+            )
+        if "close" in lowered:
+            return json.dumps(
+                {
+                    "status": "fallback",
+                    "note": "Deal handling deferred to offline review because the model service was unavailable.",
+                    "requires_human_follow_up": True,
+                }
+            )
+        if "forecast" in lowered or "monte" in lowered or "audit" in lowered:
+            return json.dumps(
+                {
+                    "narrative": "Fallback financial analysis generated offline because the model service was unavailable.",
+                    "risk_level": "MODERATE",
+                    "top_actions": ["Confirm assumptions", "Review spending", "Re-run with live model"],
+                    "fallback": True,
+                }
+            )
+        if "budget" in lowered or "pl" in lowered or "revenue" in lowered:
+            return json.dumps(
+                {
+                    "summary": "Fallback financial summary generated offline.",
+                    "health": "warning",
+                    "key_risks": ["Model service unavailable"],
+                    "recommendations": ["Review data manually", "Re-run with live model"],
+                    "fallback": True,
+                }
+            )
+        return json.dumps(
+            {
+                "fallback": True,
+                "note": "Model service unavailable; the agent used a deterministic offline fallback.",
+            }
+        )
+
     def call_llm(
         self,
         user_message: str,
@@ -197,9 +258,9 @@ class BaseAgent(ABC):
         retries: int = 2,
     ) -> tuple[str, TokenUsage]:
         """
-        Call Anthropic API with budget enforcement.
-        Deducts from the appropriate role budget; raises RecoverableError
-        if all budgets are exhausted (same as Engineering agent).
+        Call the local LLM with budget enforcement.
+        If the model service is unavailable, fall back to a deterministic
+        offline response so the agent can still complete its workflow.
         """
         # Enforce token budget before making the call
         _ = self.tokens.role_for(preferred_role, op, db=self.db)
@@ -253,7 +314,10 @@ class BaseAgent(ABC):
             except Exception as e:
                 logger.warning(f"[{self.name}] Ollama error attempt {attempt+1}: {e}")
                 if attempt == retries:
-                    raise
+                    fallback_text = self._fallback_response(task_type, op, preferred_role, user_message)
+                    fallback_usage = TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0, cost_usd=0.0, model="fallback")
+                    self.conversation_history.append({"role": "assistant", "content": fallback_text})
+                    return fallback_text, fallback_usage
                 time.sleep(2 ** attempt)
 
         return "", TokenUsage()
