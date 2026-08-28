@@ -1,0 +1,642 @@
+I’ll verify the current persistence, authentication, routing, artifact, and website-memory paths in the repository, then produce a blueprint that distinguishes confirmed facts from proposed architecture and stop before implementing anything.
+
+Updated todo list
+
+Searched for regex `localStorage|sessionStorage|cookie|conversation_history|ENTERPRISE_ROUTER_BACKEND|SQLiteStorage|MongoStorage|artifact|audit|messages/fetch-next|manager/interventions` (`**/teslastementerprise2026/**/*.{py,ts,tsx,md}`), 759 results
+
+Read 
+
+Read , lines 1 to 300
+
+Read , lines 1 to 280
+
+The repository confirms the prompt’s main premise, but with important corrections: MongoDB is an available router backend, not yet the primary default; the website’s persistence is only a few local-storage flags; and the current router API authenticates agents/admins, not end users. I’m tracing the remaining boundaries and failure semantics before writing the final blueprint.
+
+Read 
+
+Read , lines 1 to 390
+
+Read 
+
+Read , lines 540 to 590
+
+The verified architecture has several important corrections to the earlier assumptions: the router defaults to port `8765`, the current agent API keys are hashed with plain SHA-256 rather than a password KDF, and Finance’s high-value approval path still depends on the legacy in-memory bus. I’m incorporating those as migration blockers and design constraints instead of treating the current system as production-ready.
+
+Completed: *Verify current persistence and memory* (1/4)
+
+# Architectural Blueprint
+
+No implementation was performed in this turn. I verified the current codebase and prepared the migration design below for approval.
+
+## 1. Verified Current State
+
+The earlier description was partly accurate but incomplete.
+
+### Persistence
+
+- The router defaults to local SQLite, not MongoDB:
+  - enterprise_router/config.py
+  - Default backend: `sqlite`
+  - Default port: `8765`, not `8000`
+- MongoDB support exists through:
+  - enterprise_router/mongo_storage.py
+  - enterprise_router/router_storage.py
+- Sales data uses a local SQLite CRM:
+  - sales-agents/sales_tools.py
+- Finance data uses a local SQLite ledger:
+  - finance-agents/finance_tools.py
+- Artifacts are currently Markdown files stored under the configured local artifacts directory:
+  - enterprise_router/agent_artifacts.py
+- The legacy backlog and JSONL bus are local persistence mechanisms, but they are not the authoritative live router queue:
+  - `enterprise_paths.py`
+  - `agents.md`
+
+### Memory
+
+There are currently three different kinds of “memory”:
+
+1. **Transient process memory**
+   - `BaseAgent.conversation_history` stores prompt and response history only while the Python process remains alive.
+   - It is not automatically persisted.
+   - See agents/base_agent.py.
+
+2. **Durable operational state**
+   - Router messages, queue records, leases, retries, and audits persist through SQLite or MongoDB.
+   - Sales leads, deals, pitches, finance transactions, budgets, and token costs persist through local SQLite.
+
+3. **Website browser state**
+   - The website stores limited onboarding information and run identifiers in `localStorage`.
+   - It does not currently store a server-side user workspace.
+   - See website/app/onboarding/page.tsx.
+
+### Authentication
+
+The current router authenticates agents and administrators, not end users.
+
+- Agents use bearer API keys and `X-Agent-Id`.
+- Administrators use `X-Admin-Secret`.
+- API keys are currently hashed using SHA-256 in enterprise_router/service.py.
+- This is acceptable for random API tokens but is not an appropriate password-storage design.
+- No sign-up, sign-in, password reset, user session, JWT, tenant, or workspace model currently exists.
+
+### Sales and Finance
+
+Sales and Finance now have runtime workers and are included in:
+
+- `run_agents.py`
+- `run_single_agent.py`
+
+However, they are not yet production-complete. One important issue is that `BaseAgent.escalate_to_ceo()` sends through `self.bus`, while router-launched Finance uses `bus=None`. Finance’s high-value budget approval path therefore needs router-native escalation before it can be considered fully hardened.
+
+---
+
+# 2. Target Architecture
+
+The target should use five explicit layers:
+
+```mermaid
+flowchart TD
+    Browser[Website Browser]
+    Identity[Identity and Workspace API]
+    Orchestrator[Workflow Orchestrator]
+    Router[Enterprise Router]
+    Agents[CEO PM Marketing HR Engineering Sales Finance]
+    Mongo[(MongoDB Cloud)]
+    SQLite[(SQLite Local Dev)]
+    Artifacts[Artifact Store]
+    Events[Immutable Event Log]
+    Export[PDF ZIP OneDrive Export]
+
+    Browser --> Identity
+    Identity --> Orchestrator
+    Orchestrator --> Router
+    Router --> Agents
+    Router --> Events
+    Orchestrator --> Mongo
+    Router --> Mongo
+    Agents --> Artifacts
+    Artifacts --> Mongo
+    Orchestrator --> Export
+    Export --> Browser
+    Export --> OneDrive[User OneDrive]
+    SQLite -. development fallback .-> Router
+```
+
+The key rule is:
+
+> Agents may process messages and request durable writes through approved interfaces, but they may not directly mutate the event log, user workspace records, or tenant-owned durable state.
+
+---
+
+# 3. Phase 1: Identity and User Workspaces
+
+## Step 1: Define identity records
+
+Create a user model containing:
+
+- `user_id`
+- email or username
+- password hash
+- password salt
+- password algorithm and parameters
+- account status
+- created and updated timestamps
+- last login timestamp
+
+Create a workspace model containing:
+
+- `workspace_id`
+- `owner_user_id`
+- workspace name
+- active workflow ID
+- last run IDs
+- selected artifacts
+- user decisions
+- saved prompts
+- workspace settings
+- timestamps and version number
+
+Every workspace query must include the authenticated `user_id`.
+
+## Step 2: Implement password security
+
+Use a password-specific KDF:
+
+- Preferred: Argon2id
+- Acceptable alternatives: scrypt or PBKDF2-HMAC-SHA-256
+- Store a unique cryptographic salt per password
+- Store the work factor, memory cost, or iteration count with the hash
+- Never encrypt passwords
+- Never use RSA for password hashing
+
+The installed `cryptography` and `rsa` libraries can support encrypted payloads or key operations, but RSA should not be used directly for password storage.
+
+Important correction:
+
+> “128-bit RSA encryption” is not a normal RSA configuration. RSA key sizes are commonly 2048 or 3072 bits. Approximately 3072-bit RSA is generally associated with roughly 128-bit security strength. Use a vetted library and avoid designing a custom RSA protocol.
+
+## Step 3: Choose session management
+
+Prefer secure server-managed sessions:
+
+- Random opaque session ID
+- Session record stored in MongoDB
+- `HttpOnly`
+- `Secure` in production
+- `SameSite=Lax` or `Strict`
+- Expiration and revocation support
+
+JWTs are also possible, but the repository does not currently list a JWT library. If JWTs are chosen, add a maintained library and define:
+
+- short access-token lifetime
+- refresh-token rotation
+- issuer and audience validation
+- key rotation
+- revocation strategy
+- tenant and workspace claims
+
+## Step 4: Add tenant boundary checks
+
+Every protected endpoint should verify:
+
+1. The session is valid.
+2. The user is active.
+3. The workspace belongs to that user.
+4. The requested artifact, workflow, event, or report belongs to that workspace.
+5. The agent identity is not being confused with the browser user identity.
+
+Agents should continue using agent credentials internally. Browser users should never receive agent API keys.
+
+---
+
+# 4. Phase 2: Hybrid Persistence and MongoDB Migration
+
+## Step 1: Establish MongoDB as the cloud primary
+
+Keep SQLite for local development, but make MongoDB the production default through deployment configuration.
+
+Recommended collections:
+
+- `users`
+- `sessions`
+- `workspaces`
+- `workflow_runs`
+- `workflow_tasks`
+- `router_messages`
+- `router_queue`
+- `router_audit`
+- `agent_events`
+- `artifacts`
+- `report_exports`
+- `onedrive_connections`
+
+Recommended indexes:
+
+- `users.email`, unique
+- `workspaces.owner_user_id`
+- `workflow_runs.workspace_id`
+- `workflow_runs.run_id`, unique
+- `workflow_tasks.run_id`, `task_id`, unique
+- `agent_events.workspace_id`, `run_id`, `created_at`
+- `agent_events.agent_name`, `task_type`, `created_at`
+- `artifacts.workspace_id`, `run_id`, `agent_name`, `created_at`
+- `router_queue.recipient`, `state`, `priority`
+- `router_messages.id`, unique
+- `sessions.session_id`, unique, with expiration index
+
+## Step 2: Define memory tiers
+
+### Tier 1: Working memory
+
+Located inside the running agent process:
+
+- current prompt
+- current response
+- temporary tool results
+- short-term reasoning context
+- current token budget
+- current retry state
+
+This data may be discarded after the task completes.
+
+### Tier 2: Durable workflow state
+
+Stored in MongoDB:
+
+- workflow status
+- task status
+- correlation IDs
+- user decisions
+- last successful step
+- retry metadata
+- artifact references
+- approval decisions
+
+### Tier 3: Immutable event history
+
+Stored in `agent_events`:
+
+- message submitted
+- message leased
+- message acknowledged
+- message retried
+- agent decision made
+- artifact created
+- artifact published
+- workflow state changed
+- export generated
+
+Agents append events through a controlled event-writer interface. They do not update old events.
+
+---
+
+# 5. Phase 3: Event-Sourced Memory
+
+Each event should contain:
+
+```json
+{
+  "event_id": "evt-...",
+  "event_type": "artifact_created",
+  "workspace_id": "workspace-...",
+  "run_id": "run-...",
+  "task_id": "task-...",
+  "agent_name": "Finance",
+  "task_type": "GENERATE_PL_REPORT",
+  "source_message_id": "msg-...",
+  "payload": {},
+  "schema_version": 1,
+  "created_at": "UTC timestamp"
+}
+```
+
+Rules:
+
+- Events are append-only.
+- Events are immutable.
+- Each event has a unique idempotency key.
+- Sensitive user data is minimized or encrypted.
+- Event payloads are schema-versioned.
+- Rebuilding workspace state must be possible by replaying events.
+- Agents cannot directly access another user’s event stream.
+
+The event log should be the audit history. Materialized MongoDB workspace records should provide fast reads.
+
+---
+
+# 6. Phase 4: Workflow Orchestration
+
+## Target workflow
+
+1. User signs in.
+2. User selects or creates a workspace.
+3. Website submits a prompt with `workspace_id` and a new `run_id`.
+4. Orchestrator validates ownership and creates a workflow record.
+5. Orchestrator writes `workflow_started`.
+6. Orchestrator submits the initial message to the router.
+7. Router authenticates the sender and queues the task.
+8. CEO processes the request.
+9. CEO routes work to PM, Finance, Sales, Marketing, HR, or Engineering.
+10. Each worker produces outputs and artifacts.
+11. Each downstream message includes:
+    - `workspace_id`
+    - `run_id`
+    - `source_message_id`
+    - `source_task_type`
+12. Orchestrator watches task completion.
+13. Final outputs are collected.
+14. A final product or report is assembled.
+15. Website displays progress through authenticated workspace endpoints.
+
+## State recovery
+
+Every task should have a durable state machine:
+
+```text
+created
+queued
+leased
+processing
+waiting_for_dependency
+completed
+failed
+dead_lettered
+```
+
+On worker failure:
+
+- Lease expiration returns the task to the queue.
+- Idempotency keys prevent duplicate side effects.
+- Completed outputs are detected before reprocessing.
+- The orchestrator resumes from the last durable state.
+- Partial artifacts are marked incomplete rather than silently treated as final.
+
+The current router already supports leases, retries, acknowledgements, and dead-letter behavior. The missing layer is durable workflow coordination around those primitives.
+
+---
+
+# 7. Phase 5: Shadow Migration and Compatibility
+
+The migration should proceed in stages.
+
+## Stage A: Read-only Mongo validation
+
+- Keep SQLite authoritative.
+- Mirror selected records into MongoDB.
+- Compare records without changing runtime behavior.
+- Measure differences.
+
+## Stage B: Shadow writes
+
+For every write:
+
+1. Write to SQLite.
+2. Write the equivalent MongoDB record.
+3. Attach the same logical record ID.
+4. Record success or failure for both writes.
+5. Run a parity validator.
+
+Do not claim “100% parity” merely because row counts match. Compare:
+
+- IDs
+- status
+- payload
+- timestamps within an approved tolerance
+- retry counts
+- artifact references
+- ownership fields
+- financial amounts
+- checksums for large payloads
+
+## Stage C: Dual reads
+
+- Read from SQLite and MongoDB.
+- Compare results.
+- Continue serving SQLite data.
+- Alert on divergence.
+
+## Stage D: Mongo read-primary
+
+- MongoDB becomes the read source.
+- SQLite remains a fallback or backup.
+- Continue shadow writes temporarily.
+
+## Stage E: Retirement
+
+Only after an agreed validation window:
+
+- stop SQLite writes
+- retain an archived snapshot
+- document rollback steps
+- remove legacy paths only after production confidence
+
+---
+
+# 8. Required Validation Gates
+
+## State compatibility
+
+Tests must verify:
+
+- identical logical records in SQLite and MongoDB
+- no missing artifacts
+- no duplicate message IDs
+- no incorrect financial totals
+- replay produces the same materialized workspace state
+
+## Queue integrity
+
+Simulate:
+
+- worker crash after lease
+- worker crash after artifact creation
+- worker crash before acknowledgement
+- network timeout after message submission
+- duplicate submission
+- MongoDB temporarily unavailable
+- SQLite unavailable during shadow write
+- process termination during JSONL append
+
+Verify:
+
+- messages are not lost
+- duplicate side effects are prevented
+- leases expire and recover
+- dead letters are preserved
+- message envelopes remain valid
+- JSONL corruption is detected and isolated
+
+The existing `enterprise_message_bus.jsonl` and `enterprise_backlog.db` should be treated as legacy compatibility targets, not the long-term cloud source of truth.
+
+## Authentication security
+
+Add automated gates for:
+
+- cross-workspace access attempts
+- invalid session replay
+- expired sessions
+- revoked sessions
+- password-hash verification
+- rate limiting
+- CSRF protection where cookie sessions are used
+- secure cookie attributes
+- object-level authorization
+- secret leakage scanning
+- dependency vulnerability scanning
+- static analysis
+
+## Export validation
+
+For every export:
+
+- collect source artifact IDs
+- include a manifest in the ZIP
+- include source-to-report references
+- verify every financial total
+- verify every sales metric
+- compare raw Markdown content with rendered HTML
+- extract text from the PDF and compare required values
+- run visual regression screenshots
+- reject reports with missing sections or malformed totals
+
+---
+
+# 9. Report Assembly Pipeline
+
+## Aggregation
+
+Collect:
+
+- CEO strategy artifact
+- PM roadmap artifact
+- Marketing campaign artifact
+- HR staffing artifact
+- Engineering implementation artifact
+- Sales pipeline and deal artifacts
+- Finance P&L, forecast, and audit artifacts
+- router audit events
+- workflow metadata
+
+Normalize them into a report model:
+
+```text
+Report
+  metadata
+  executive_summary
+  strategy
+  roadmap
+  organization
+  marketing
+  sales
+  finance
+  engineering
+  audit_trail
+  source_manifest
+```
+
+## Output formats
+
+### HTML
+
+- Server-rendered template
+- Stable CSS
+- Print stylesheet
+- Explicit table formatting
+- No client-only data dependencies
+
+### PDF
+
+Recommended approach:
+
+1. Generate canonical HTML.
+2. Render HTML using a controlled PDF renderer.
+3. Extract text from the PDF.
+4. Compare required values against the report model.
+5. Store the PDF metadata and checksum.
+
+### ZIP
+
+Include:
+
+- final PDF
+- final HTML
+- original Markdown artifacts
+- JSON workflow snapshot
+- event manifest
+- validation results
+- report version
+
+---
+
+# 10. OneDrive Integration
+
+Use Microsoft Graph with delegated OAuth permissions.
+
+Recommended flow:
+
+1. User selects “Export to OneDrive.”
+2. Website begins Microsoft authorization.
+3. Backend receives the authorization callback.
+4. Backend stores refresh-token data encrypted.
+5. Backend requests the minimum required scopes.
+6. Backend creates a dedicated application folder.
+7. Backend uploads the ZIP and PDF using resumable upload sessions.
+8. Backend records the OneDrive item ID and version.
+9. Website displays the export status.
+
+Permission considerations:
+
+- Prefer `Files.ReadWrite.AppFolder` where practical.
+- Otherwise use the narrowest delegated file scope.
+- Avoid broad full-drive permissions unless strictly required.
+- Do not accept arbitrary upload URLs from the browser.
+- Validate file names and destination paths server-side.
+- Never expose refresh tokens to the browser.
+- Support disconnect and token revocation.
+
+---
+
+# 11. Important Existing Gaps
+
+These should be addressed before calling the migration complete:
+
+- MongoDB is implemented but not the default cloud deployment path.
+- User authentication does not exist.
+- Workspace ownership does not exist.
+- Website local storage is not durable enterprise memory.
+- Agent conversation history is process-local.
+- Finance escalation still assumes a bus in one code path.
+- There is no unified workflow state machine.
+- There is no final report assembly pipeline.
+- There is no PDF or ZIP export.
+- There is no OneDrive integration.
+- Artifacts are local Markdown files rather than cloud-managed records.
+- The existing API exposes agent/admin authentication, not user authentication.
+- The project has multiple legacy messaging paths that need explicit boundaries.
+
+---
+
+# 12. Recommended Execution Order
+
+1. Fix router-native Sales and Finance escalation behavior.
+2. Add workflow IDs and workspace IDs to every message and artifact.
+3. Add the durable event-writer interface.
+4. Add user, session, and workspace models.
+5. Add object-level authorization tests.
+6. Add MongoDB collections and indexes.
+7. Implement SQLite-to-Mongo shadow writes.
+8. Implement parity validation and failure recovery tests.
+9. Add the workflow orchestrator and recovery state machine.
+10. Move artifact metadata into MongoDB while preserving Markdown content.
+11. Build HTML report assembly.
+12. Add PDF and ZIP generation.
+13. Add visual and structural export validation.
+14. Add optional OneDrive export.
+15. Make MongoDB the production default.
+16. Retire or isolate legacy local queue paths.
+
+## Bottom line
+
+The codebase has a substantial foundation: router messaging, leases, retries, agent roles, local business stores, and artifact generation. It is not yet a cloud-persistent multi-user platform because identity, workspace ownership, durable long-term memory, orchestration recovery, and final export packaging are still absent.
+
+The appropriate next step is implementation of Phase 1 only after approval, beginning with identity and workspace boundaries.
