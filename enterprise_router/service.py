@@ -48,10 +48,7 @@ class EnterpriseRouter:
     def __init__(
         self,
         *,
-        backend: str = "sqlite",
         db_path: str | None = None,
-        mongo_uri: str | None = None,
-        mongo_db_name: str | None = None,
         shared_secret: str = "change-me-registration",
         storage: RouterStorage | None = None,
     ):
@@ -66,12 +63,7 @@ class EnterpriseRouter:
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "enterprise_router.db",
             )
-            self._storage = create_storage(
-                backend=backend,
-                db_path=db_path or default_db,
-                mongo_uri=mongo_uri,
-                mongo_db_name=mongo_db_name,
-            )
+            self._storage = create_storage(db_path=db_path or default_db)
 
     def _audit(self, subject_id: str, event_type: str, details: dict[str, Any], *, actor: str = "system") -> None:
         self._storage.log_audit(event_type, subject_id, actor, details, _utc_now())

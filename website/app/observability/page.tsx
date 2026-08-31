@@ -17,7 +17,7 @@ const ARCH_LAYERS = [
   { label: 'Web UI',            icon: <Globe size={14} />,    color: 'var(--sky)',      detail: 'Next.js 14 · React 18 · Framer Motion' },
   { label: 'API / Orchestrator',icon: <Layers size={14} />,   color: 'var(--indigo)',   detail: 'FastAPI · enterprise_router · priority queue' },
   { label: 'Agent Layer',       icon: <Brain size={14} />,    color: 'var(--agent-product)', detail: '7 top-level agents + worker pools' },
-  { label: 'Persistence',       icon: <Database size={14} />, color: 'var(--agent-hr)', detail: 'SQLite / MongoDB · message store' },
+  { label: 'Persistence',       icon: <Database size={14} />, color: 'var(--agent-hr)', detail: 'SQLite · message store' },
 ]
 
 const fallbackThroughputData = [

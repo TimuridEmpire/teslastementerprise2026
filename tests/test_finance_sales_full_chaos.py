@@ -18,13 +18,17 @@ from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# "finance-agents"/"sales-agents" have hyphens and aren't valid dotted import
+# paths (there is no "tools" package) — add their directories to sys.path.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "finance-agents"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "sales-agents"))
 
 from finance_schema import AgentMessage, TokenUsage
-from tools.finance_tools import (
+from finance_tools import (
     get_budget_status, allocate_budget, log_expense,
     log_revenue, generate_pl_report, monte_carlo_forecast,
 )
-from tools.sales_tools import (
+from sales_tools import (
     qualify_lead, generate_pitch, close_deal,
     get_pipeline_report, identify_upsell_opportunities,
 )
@@ -249,7 +253,7 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         self._anthropic_patcher.start()
         self._client_patcher.start()
 
-        from bus.message_bus import MessageBus
+        from message_bus import MessageBus
         self.bus = MessageBus()
 
     def tearDown(self):
@@ -257,10 +261,10 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         self._client_patcher.stop()
 
     async def test_full_scenario(self):
-        from agents.finance_agent import FinanceAgent
-        from agents.sales_agent import SalesAgent
+        from finance_agent import FinanceAgent
+        from sales_agent import SalesAgent
 
-        finance = FinanceAgent(self.bus)
+        finance = FinanceAgent(router_client=MagicMock(), bus=self.bus)
         sales = SalesAgent(self.bus)
 
         stub_finance = (
@@ -320,8 +324,8 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.payload["status"], "revenue_logged")
 
     async def test_budget_escalation_flow(self):
-        from agents.finance_agent import FinanceAgent
-        finance = FinanceAgent(self.bus)
+        from finance_agent import FinanceAgent
+        finance = FinanceAgent(router_client=MagicMock(), bus=self.bus)
 
         # Over $10K → CEO escalation (simulated approval for < $50K)
         approval_req = AgentMessage(
@@ -333,7 +337,7 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "done")
 
     async def test_pipeline_report_flow(self):
-        from agents.sales_agent import SalesAgent
+        from sales_agent import SalesAgent
 
         sales = SalesAgent(self.bus)
         sales.call_llm_structured = MagicMock(return_value=(
@@ -353,8 +357,8 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def test_monte_carlo_request_flow(self):
         """Finance agent handles MONTE_CARLO_SIM request end-to-end."""
-        from agents.finance_agent import FinanceAgent
-        finance = FinanceAgent(self.bus)
+        from finance_agent import FinanceAgent
+        finance = FinanceAgent(router_client=MagicMock(), bus=self.bus)
 
         req = AgentMessage(
             task_type="MONTE_CARLO_SIM",
@@ -369,7 +373,7 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
 
     async def test_sales_upsell_flow(self):
         """Sales agent identifies upsell targets from closed deals."""
-        from agents.sales_agent import SalesAgent
+        from sales_agent import SalesAgent
 
         sales = SalesAgent(self.bus)
         sales.call_llm_structured = MagicMock(return_value=(
@@ -399,7 +403,7 @@ class TestChaos(unittest.IsolatedAsyncioTestCase):
         self._anthropic_patcher.start()
         self._client_patcher.start()
 
-        from bus.message_bus import MessageBus
+        from message_bus import MessageBus
         self.bus = MessageBus()
 
     def tearDown(self):
@@ -407,7 +411,7 @@ class TestChaos(unittest.IsolatedAsyncioTestCase):
         self._client_patcher.stop()
 
     async def test_missing_lead_id(self):
-        from agents.sales_agent import SalesAgent
+        from sales_agent import SalesAgent
         sales = SalesAgent(self.bus)
         msg = AgentMessage(
             task_type="QUALIFY_LEAD",
@@ -420,7 +424,7 @@ class TestChaos(unittest.IsolatedAsyncioTestCase):
         self.assertIn("error", result.payload)
 
     async def test_invalid_lead_id(self):
-        from agents.sales_agent import SalesAgent
+        from sales_agent import SalesAgent
         sales = SalesAgent(self.bus)
         msg = AgentMessage(
             task_type="GENERATE_PITCH",
@@ -432,8 +436,8 @@ class TestChaos(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "error")
 
     async def test_unknown_task_type(self):
-        from agents.finance_agent import FinanceAgent
-        finance = FinanceAgent(self.bus)
+        from finance_agent import FinanceAgent
+        finance = FinanceAgent(router_client=MagicMock(), bus=self.bus)
         msg = AgentMessage(
             task_type="DO_SOMETHING_WEIRD",
             sender="CEO",

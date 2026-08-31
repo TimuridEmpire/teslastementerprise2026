@@ -7,20 +7,16 @@ Run the router API:
 Environment (see ``enterprise_paths`` and ``enterprise_router.config``):
   ENTERPRISE_ROUTER_URL, ENTERPRISE_AGENT_NAME, ENTERPRISE_AGENT_API_KEY — agent clients
   ENTERPRISE_ROUTER_ADMIN_SECRET — admin endpoints
-  ENTERPRISE_ROUTER_BACKEND — sqlite (default) or mongo for the message queue
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import requests  # pyright: ignore[reportMissingModuleSource]
 
 from enterprise_router_client import EnterpriseRouterClient, router_configured
 from message_schema import EnvelopeInput, Message, normalize_envelope
-
-if TYPE_CHECKING:
-    from inter_agent_mongo import InterAgentMongoStore
 
 
 def _client_or_raise() -> EnterpriseRouterClient:
@@ -90,7 +86,7 @@ def receive_envelope(agent_name: str | None = None) -> Optional[Dict[str, Any]]:
     return client.fetch_next(agent_name)
 
 
-def create_inter_agent_fastapi_app(store: "InterAgentMongoStore | None" = None):
+def create_inter_agent_fastapi_app(store: None = None):
     """
     Build the Enterprise Router FastAPI app.
 
@@ -106,40 +102,20 @@ def run_inter_agent_api_server(
     *,
     host: str | None = None,
     port: int | None = None,
-    mirror_sqlite: bool = False,
 ) -> None:
-    """
-    Start the enterprise router with uvicorn.
-
-    ``mirror_sqlite`` is ignored; SQLite backlog mirroring is configured on the
-    mongo store via ``InterAgentMongoStore(mirror_backlog=...)`` when using backend=mongo.
-    """
+    """Start the enterprise router (SQLite-backed) with uvicorn."""
     import uvicorn
 
     from enterprise_router.config import RouterSettings
 
     settings = RouterSettings.from_env()
-    if host is not None:
+    if host is not None or port is not None:
         settings = RouterSettings(
-            backend=settings.backend,
             sqlite_db_path=settings.sqlite_db_path,
-            mongo_uri=settings.mongo_uri,
-            mongo_db_name=settings.mongo_db_name,
             shared_secret=settings.shared_secret,
             admin_secret=settings.admin_secret,
-            api_host=host,
+            api_host=host if host is not None else settings.api_host,
             api_port=port if port is not None else settings.api_port,
-        )
-    elif port is not None:
-        settings = RouterSettings(
-            backend=settings.backend,
-            sqlite_db_path=settings.sqlite_db_path,
-            mongo_uri=settings.mongo_uri,
-            mongo_db_name=settings.mongo_db_name,
-            shared_secret=settings.shared_secret,
-            admin_secret=settings.admin_secret,
-            api_host=settings.api_host,
-            api_port=port,
         )
 
     from enterprise_router.api import create_app

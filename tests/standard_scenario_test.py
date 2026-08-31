@@ -2,7 +2,6 @@ import time
 
 # Import the core infrastructure
 from message_bus import MessageBus
-from inter_agent_mongo import inter_agent_store_from_env
 from ceo_distribution_tokens import CeoDistributionTokenRegistry
 from message_schema import Message, normalize_envelope
 
@@ -53,7 +52,6 @@ def run_launch_simulation():
     token_registry.transfer("EXECUTIVE_BROADCAST", "CEO", "PM", 3, acting_executive="CEO") # PM gets 1 broadcast
 
     # 2. Initialize Infrastructure (Wiring the registry into the bus)
-    mongo_store = inter_agent_store_from_env(mirror_sqlite=True)
     bus = MessageBus(
         json_log_path="tesla_audit.jsonl", 
         distribution_tokens=token_registry, 

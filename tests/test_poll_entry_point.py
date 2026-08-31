@@ -4,16 +4,8 @@ main.py — Finance + Sales Agent System entry point.
 Modes:
   python main.py demo          Run the 'Launch SaaS Feature' scenario (no API key needed)
   python main.py run           Async in-memory bus mode (requires OLLAMA_READY)
-  python main.py poll          MongoDB polling loop — mirrors Engineering agent exactly
   python main.py status        Print current tool-layer stats
   python main.py test          Run unit tests
-
-MongoDB polling (python main.py poll):
-  - Reads MONGO_URI / MONGO_DB env vars (defaults: localhost / kanosei)
-  - Finance agent claims messages where recipient=FINANCE
-  - Sales agent claims messages where recipient=SALES
-  - Mirrors Engineering agent's claim_next_message / write_response / mark_source_done pattern
-  - RecoverableError re-queues the message (status back to 'pending') and waits
 """
 
 import asyncio
@@ -21,7 +13,6 @@ import json
 import logging
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -32,10 +23,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-MONGO_URI    = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB     = os.environ.get("MONGO_DB", "kanosei")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
-
 
 def print_banner():
     print("""
@@ -43,95 +30,6 @@ def print_banner():
 ║   Finance + Sales Agent System                           ║
 ╚══════════════════════════════════════════════════════════╝
 """)
-
-
-# ---------------------------------------------------------------------------
-# MongoDB helpers — identical pattern to Engineering agent
-# ---------------------------------------------------------------------------
-
-def get_db():
-    from pymongo import MongoClient
-    return MongoClient(MONGO_URI)[MONGO_DB]
-
-
-def claim_next_message(db, recipient: str):
-    """Atomically claim a pending message for this agent."""
-    return db.messages.find_one_and_update(
-        {"recipient": recipient, "status": "pending"},
-        {"$set": {"status": "in-progress"}},
-        return_document=True,
-    )
-
-
-def write_response(db, response: dict):
-    """Insert agent response as a new message document."""
-    db.messages.insert_one(response)
-
-
-def mark_source_done(db, message_id: str, status: str, error: str = ""):
-    """Update the original message's status once finished."""
-    db.messages.update_one(
-        {"id": message_id},
-        {"$set": {"status": status, "error": error}},
-    )
-
-
-# ---------------------------------------------------------------------------
-# Polling loop — mirrors Engineering agent's __main__ block exactly
-# ---------------------------------------------------------------------------
-
-def run_poll():
-    """
-    Runs Finance and Sales agents in a shared MongoDB polling loop.
-    Each agent claims messages addressed to it, processes them, writes the response.
-    RecoverableError → message re-queued, agent sleeps and retries.
-    """
-    from agents.finance_agent import FinanceAgent
-    from agents.sales_agent import SalesAgent
-
-    print_banner()
-    db = get_db()
-
-    finance = FinanceAgent(bus=None, db=db)
-    sales   = SalesAgent(bus=None, db=db)
-
-    agents = {
-        "FINANCE": finance,
-        "SALES":   sales,
-    }
-
-    print(f"Finance + Sales agents started. Polling MongoDB every {POLL_INTERVAL}s...")
-
-    while True:
-        handled_any = False
-
-        for recipient, agent in agents.items():
-            message = claim_next_message(db, recipient)
-            if message is None:
-                continue
-
-            message.pop("_id", None)
-            handled_any = True
-            print(f"\nPicked up message: {message['id']} ({message['task_type']}) → {recipient}")
-
-            response = agent.handle_message(message)
-
-            # None = RecoverableError — message was re-queued, skip writing response
-            if response is None:
-                print(f"Message {message['id']} re-queued pending token replenishment.")
-                continue
-
-            write_response(db, response)
-            response.pop("_id", None)
-
-            final_status = "done" if response.get("status") == "done" else "error"
-            mark_source_done(db, message["id"], final_status, response.get("error", ""))
-
-            print(f"Response written for {message['id']}. Status: {final_status}")
-            print(json.dumps(response, indent=2, default=str))
-
-        if not handled_any:
-            time.sleep(POLL_INTERVAL)
 
 
 # ---------------------------------------------------------------------------
@@ -237,11 +135,11 @@ if __name__ == "__main__":
         asyncio.run(run_demo())
     elif mode == "run":
         asyncio.run(run_live())
-    elif mode == "poll":
-        run_poll()
     elif mode == "status":
-        from finance-agents.finance_tools import get_budget_status, generate_pl_report
-        from sales-agents.sales_tools import get_pipeline_report
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "finance-agents"))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "sales-agents"))
+        from finance_tools import get_budget_status, generate_pl_report
+        from sales_tools import get_pipeline_report
         print_banner()
         print(json.dumps(get_budget_status("Q2-2026"), indent=2))
         print(json.dumps(generate_pl_report("Q2-2026"), indent=2))
@@ -252,4 +150,4 @@ if __name__ == "__main__":
                            cwd=os.path.dirname(__file__))
         sys.exit(r.returncode)
     else:
-        print(f"Unknown mode: {mode}. Use: demo | run | poll | status | test")
+        print(f"Unknown mode: {mode}. Use: demo | run | status | test")

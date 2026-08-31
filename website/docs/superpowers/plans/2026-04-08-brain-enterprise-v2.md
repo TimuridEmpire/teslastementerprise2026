@@ -4,7 +4,7 @@
 
 **Goal:** Transform BRAIN Enterprise Lab from a purple-heavy mock dashboard into a polished, OLED-dark AI enterprise OS with a central chat command interface wired to the real FastAPI backend.
 
-**Architecture:** Next.js 14 App Router frontend → FastAPI `enterprise_router` backend → SQLite (local) or MongoDB Atlas (online). The frontend has two tiers: (1) a **central Command Chat** where users converse with and direct the company, and (2) per-agent workspace pages. The chat routes slash-commands (`/ceo`, `/product`, etc.) to their target agents. All live data fetches from the FastAPI using polling; mock data is the fallback when the API is offline.
+**Architecture:** Next.js 14 App Router frontend → FastAPI `enterprise_router` backend → SQLite. The frontend has two tiers: (1) a **central Command Chat** where users converse with and direct the company, and (2) per-agent workspace pages. The chat routes slash-commands (`/ceo`, `/product`, etc.) to their target agents. All live data fetches from the FastAPI using polling; mock data is the fallback when the API is offline.
 
 **Tech Stack:** Next.js 14, TypeScript, Tailwind CSS, Framer Motion, Recharts, 21st.dev MCP components, `Plus Jakarta Sans` + `Fira Code` fonts, FastAPI backend at `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`).
 
@@ -407,7 +407,7 @@ export interface ApiAuditEvent {
 
 export interface ApiHealth {
   status: string
-  backend: 'sqlite' | 'mongo'
+  backend: 'sqlite'
 }
 
 export interface ApiError {

@@ -1,7 +1,7 @@
 """Client adapter for the shared UI-Team enterprise_router API.
 
 Agents in this repo should use this adapter for cross-repo/cloud communication.
-The router API owns queueing, auth, SQLite/Mongo persistence, and audit logs.
+The router API owns queueing, auth, SQLite persistence, and audit logs.
 """
 
 from __future__ import annotations

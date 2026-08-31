@@ -2,12 +2,12 @@
 
 ## Source of Truth
 - Based on `agents.md` and `eng-agents/engineering_agent.py`.
-- Router path is primary; legacy Mongo path only for offline demo.
+- The Enterprise Router (SQLite-backed) is the only runtime path.
 - Implementation details for pulling, posting, ack/nack, and artifact output are in `agent_logic_structures/Enterprise_Router_Implementation_Guide.md`.
 
 ## State Machine
 1. `IDLE`
-- Poll for one message (`receive("Engineering")` through `claim_next_message`).
+- Poll for one message (`receive("Engineering")` via the Enterprise Router).
 
 2. `BUSY`
 - Build spec from inbound task (`generate_code` or `IMPLEMENT_FEATURE`).

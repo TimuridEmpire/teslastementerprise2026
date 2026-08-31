@@ -14,6 +14,10 @@ import json
 import logging
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# "finance-agents" has a hyphen and isn't a valid dotted import path, so its
+# directory must be added to sys.path directly (mirrors how this file's own
+# directory is put on sys.path when run_single_agent.py loads sibling agents).
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "finance-agents"))
 
 from agents.base_agent import BaseAgent
 from finance_schema import AgentMessage, TokenUsage
@@ -21,7 +25,7 @@ from sales_tools import (
     qualify_lead, generate_pitch, close_deal,
     get_pipeline_report, identify_upsell_opportunities,
 )
-from finance-agents.finance_tools import log_token_cost
+from finance_tools import log_token_cost
 
 logger = logging.getLogger("sales_agent")
 
@@ -49,7 +53,11 @@ Always respond in JSON. Keep responses under 900 tokens.
 class SalesAgent(BaseAgent):
 
     def __init__(self, bus, db=None):
-        super().__init__(name="SALES", bus=bus, system_prompt=SALES_SYSTEM_PROMPT, db=db)
+        # "Sales" (not "SALES") to match the canonical registry in
+        # agent_transport.AGENT_SALES / scripts/bootstrap_router_agents.py —
+        # routing keys are case-sensitive, so a mismatch here means messages
+        # addressed to "Sales" never reach this agent's mailbox/queue.
+        super().__init__(name="Sales", bus=bus, system_prompt=SALES_SYSTEM_PROMPT, db=db)
 
     async def handle(self, message: AgentMessage):
         task = message.task_type
@@ -93,7 +101,7 @@ Provide a brief strategic note. Return JSON with:
         result, usage = self.call_llm_structured(
             prompt, task_type="QUALIFY_LEAD", op="qualify", preferred_role="analyst"
         )
-        log_token_cost("SALES", "QUALIFY_LEAD",
+        log_token_cost("Sales", "QUALIFY_LEAD",
                        usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
 
         reply = msg.reply({**qual, "llm_strategy": result}, status="done")
@@ -129,7 +137,7 @@ Return JSON with:
         result, usage = self.call_llm_structured(
             prompt, task_type="GENERATE_PITCH", op="pitch", preferred_role="executor"
         )
-        log_token_cost("SALES", "GENERATE_PITCH",
+        log_token_cost("Sales", "GENERATE_PITCH",
                        usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
 
         reply = msg.reply({**base_pitch, "llm_enhanced": result}, status="done")
@@ -156,8 +164,8 @@ Return JSON with:
         if won and "deal_id" in result:
             revenue_msg = AgentMessage(
                 task_type="REVENUE_LOG",
-                sender="SALES",
-                recipient="FINANCE",
+                sender="Sales",
+                recipient="Finance",
                 payload={
                     "deal_id":        result["deal_id"],
                     "company":        result["company"],
@@ -189,7 +197,7 @@ Return JSON with:
         result, usage = self.call_llm_structured(
             prompt, task_type="UPSELL", op="upsell", preferred_role="analyst"
         )
-        log_token_cost("SALES", "UPSELL",
+        log_token_cost("Sales", "UPSELL",
                        usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
 
         reply = msg.reply({"opportunities": opportunities, "llm_analysis": result}, status="done")
@@ -212,7 +220,7 @@ Return JSON with:
         result, usage = self.call_llm_structured(
             prompt, task_type="PIPELINE_REPORT", op="pipeline", preferred_role="reporter"
         )
-        log_token_cost("SALES", "PIPELINE_REPORT",
+        log_token_cost("Sales", "PIPELINE_REPORT",
                        usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
 
         reply = msg.reply({**report, "llm_summary": result}, status="done")
@@ -237,7 +245,7 @@ Return JSON with:
         result, usage = self.call_llm_structured(
             prompt, task_type="DEMO_REQUEST", op="demo", preferred_role="executor"
         )
-        log_token_cost("SALES", "DEMO_REQUEST",
+        log_token_cost("Sales", "DEMO_REQUEST",
                        usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
 
         reply = msg.reply({"lead": qual, "demo_plan": result}, status="done")

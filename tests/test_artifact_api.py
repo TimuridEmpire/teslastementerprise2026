@@ -12,10 +12,7 @@ from enterprise_router.config import RouterSettings
 def _client(tmp_path, monkeypatch) -> tuple[TestClient, str]:
     monkeypatch.setenv("ENTERPRISE_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
     settings = RouterSettings(
-        backend="sqlite",
         sqlite_db_path=str(tmp_path / "router.db"),
-        mongo_uri="mongodb://localhost:27017/",
-        mongo_db_name="unused",
         shared_secret="shared",
         admin_secret="admin-secret",
         api_host="127.0.0.1",

@@ -477,17 +477,35 @@ class CeoAgent(ThreadSafeAgentMixin):
         )
 
     def _gather_information_unlocked(self, subordinate_agents: List[str]) -> List[str]:
+        """
+        Ground each department's "report" in its actual most recent router
+        interaction (from the shared AgentBacklog) instead of a fixed,
+        content-free string — the CEO otherwise never really looks at what
+        other agents have done before "deciding" a strategy.
+        """
         self.logger.info("Initiating information gathering from departments...")
+        gathered_data = []
         for agent in subordinate_agents:
             self._record_task_for_agent_unlocked(agent)
-        gathered_data = [
-            f"Status report from {agent}: All systems operational."
-            for agent in subordinate_agents
-        ]
+            gathered_data.append(self._latest_status_line_unlocked(agent))
         self.logger.info(
             f"Successfully gathered {len(gathered_data)} department reports."
         )
         return gathered_data
+
+    def _latest_status_line_unlocked(self, agent: str) -> str:
+        try:
+            history = self.backlog.get_agent_history(agent, limit=1)
+        except Exception as exc:
+            self.logger.warning("Could not read backlog history for %s: %s", agent, exc)
+            history = []
+        if not history:
+            return f"Status report from {agent}: no recorded activity yet."
+        latest = history[0]
+        return (
+            f"Status report from {agent}: last activity was '{latest.get('task_type', 'UNKNOWN')}' "
+            f"({latest.get('status', 'unknown')}) at {latest.get('timestamp', 'unknown time')}."
+        )
 
     def _make_strategic_decision_unlocked(self, data) -> Any:
         self.logger.info("Sending data to Mistral for strategic analysis...")

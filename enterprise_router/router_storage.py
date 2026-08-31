@@ -107,19 +107,7 @@ class RouterStorage(ABC):
     def touch_api_key(self, agent_name: str, last_used_at: str) -> None: ...
 
 
-def create_storage(
-    backend: str = "sqlite",
-    db_path: str = "enterprise_router.db",
-    mongo_uri: str | None = None,
-    mongo_db_name: str | None = None,
-) -> RouterStorage:
-    normalized = backend.strip().lower()
-    if normalized == "sqlite":
-        from .sqlite_storage import SQLiteStorage
+def create_storage(db_path: str = "enterprise_router.db") -> RouterStorage:
+    from .sqlite_storage import SQLiteStorage
 
-        return SQLiteStorage(db_path)
-    if normalized == "mongo":
-        from .mongo_storage import MongoStorage
-
-        return MongoStorage(uri=mongo_uri, db_name=mongo_db_name)
-    raise ValueError(f"Unsupported router backend '{backend}'.")
+    return SQLiteStorage(db_path)

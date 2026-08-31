@@ -17,6 +17,11 @@ from pm_storage import storage
 from artifact_writer import render_campaign_brief_md, write_artifact, publish_artifact
 from agent_logger import get_agent_logger, log_inter_agent_message
 
+try:
+    from enterprise_router.agent_artifacts import write_agent_artifact
+except ImportError:  # pragma: no cover - artifact API is optional in isolated tests
+    write_agent_artifact = None
+
 BUDGET_APPROVAL_THRESHOLD = 10000
 
 
@@ -216,6 +221,21 @@ class MarketingAgent:
             self.logger.info(
                 f"MarketingAgent: campaign brief written to {brief_artifact['path']}"
             )
+            # Also register with the router-visible artifact index (same
+            # mechanism CEO/PM/Engineering use) so this brief shows up in
+            # GET /artifacts and the website — write_artifact() above saves
+            # under a nested project_id directory that the router's artifact
+            # scan does not walk.
+            if write_agent_artifact is not None:
+                write_agent_artifact(
+                    self.name,
+                    title=f"{product} Campaign Brief",
+                    body=brief_md,
+                    artifact_type="campaign-brief",
+                    metadata={"project_id": project_id, "product_name": product, "budget": budget},
+                    source_message_id=str(msg.get("id", "")),
+                    source_task_type="LAUNCH_CAMPAIGN",
+                )
             # publish_artifact() sends ARTIFACT_PUBLISHED to CEO via the router.
             # It is non-fatal: a failure logs a warning and never raises.
             publish_artifact(brief_artifact, source_msg=msg)

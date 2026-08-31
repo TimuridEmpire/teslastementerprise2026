@@ -23,11 +23,6 @@ except ImportError:  # pragma: no cover - push support is optional in light demo
     git = None
 
 try:
-    from pymongo import MongoClient
-except ImportError:  # pragma: no cover - Mongo is legacy offline-demo only
-    MongoClient = None
-
-try:
     from agent_transport import ack, delegate, nack, receive
 except ImportError:
     ack = delegate = nack = receive = None
@@ -183,26 +178,24 @@ class TokenBudget:
         )
 
     def _request_tokens_from_hr(self, db):
-        if db is None:
-            print("[TokenBudget] Token request skipped: no offline Mongo database is configured.")
+        """Notify HR that engineering agents are out of token budget, via the
+        Enterprise Router (``db`` is unused — kept for call-site compatibility)."""
+        if delegate is None:
+            print("[TokenBudget] Token request skipped: router transport unavailable.")
             return
-        request = {
-            "id": str(uuid.uuid4()),
-            "timestamp": now(),
-            "sender": "ENG",
-            "recipient": "HR",
-            "task_type": "TOKEN_REQUEST",
-            "context": "",
-            "payload": {
-                "reason": "All engineering agents have exhausted their token budgets mid-task.",
-                "requested_budgets": DEFAULT_BUDGETS,
-            },
-            "status": "pending",
-            "error": ""
-        }
-        db.messages.insert_one(request)
-        request.pop("_id", None)
-        print(f"[TokenBudget] Token request sent to HR agent: {request['id']}")
+        try:
+            delegate(
+                sender="Engineering",
+                recipient="HR",
+                task_type="TOKEN_REQUEST",
+                payload={
+                    "reason": "All engineering agents have exhausted their token budgets mid-task.",
+                    "requested_budgets": DEFAULT_BUDGETS,
+                },
+            )
+            print("[TokenBudget] Token request sent to HR agent.")
+        except Exception as exc:
+            print(f"[TokenBudget] Could not send TOKEN_REQUEST to HR via router: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -925,8 +918,7 @@ class EngineeringAgent:
     def submit_response(self, response, source_message):
         if delegate is None:
             raise RuntimeError(
-                "Router transport is unavailable. Ensure agent_transport.py is on PYTHONPATH, "
-                "or run with ENGINEERING_OFFLINE_DEMO_MONGO=1 for the legacy Mongo demo path."
+                "Router transport is unavailable. Ensure agent_transport.py is on PYTHONPATH."
             )
 
         delegate(
@@ -947,43 +939,10 @@ class EngineeringAgent:
         )
 
 
-# MongoDB connection — reads MONGO_URI from environment so credentials are never hardcoded.
-# Set the environment variable before running, e.g.:
-#   $env:MONGO_URI = "mongodb+srv://user:pass@cluster.mongodb.net/"
-#   $env:MONGO_DB  = "kanosei"          # optional, defaults to "kanosei"
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB  = os.environ.get("MONGO_DB", "kanosei")
-
-def get_db():
-    if MongoClient is None:
-        raise RuntimeError("pymongo is required for ENGINEERING_OFFLINE_DEMO_MONGO=1.")
-    client = MongoClient(MONGO_URI)
-    return client[MONGO_DB]
-
-def claim_next_message(db):
-    """Atomically find a pending message for ENG and mark it as in-progress."""
-    return db.messages.find_one_and_update(
-        {"recipient": "ENG", "status": "pending"},
-        {"$set": {"status": "in-progress"}},
-        return_document=True  # return the updated document
-    )
-
-def write_response(db, response):
-    """Insert the agent's response as a new message document."""
-    db.messages.insert_one(response)
-
-def mark_source_done(db, message_id, status, error=""):
-    """Update the original message's status once we're finished with it."""
-    db.messages.update_one(
-        {"id": message_id},
-        {"$set": {"status": status, "error": error}}
-    )
-
 def process_one_router_message(agent):
     if receive is None or ack is None or nack is None:
         raise RuntimeError(
-            "Router transport is unavailable. Ensure agent_transport.py is on PYTHONPATH, "
-            "or run with ENGINEERING_OFFLINE_DEMO_MONGO=1 for the legacy Mongo demo path."
+            "Router transport is unavailable. Ensure agent_transport.py is on PYTHONPATH."
         )
 
     message = receive("Engineering")
@@ -1016,48 +975,5 @@ def run_router_worker():
         if not process_one_router_message(agent):
             time.sleep(poll_interval)
 
-def run_offline_mongo_worker():
-    db = get_db()
-    agent = EngineeringAgent(db=db)
-    poll_interval = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
-
-    print(f"Engineering agent started in offline Mongo demo mode. Polling every {poll_interval}s...")
-
-    while True:
-        message = claim_next_message(db)
-
-        if message is None:
-            # Nothing to do — wait and try again
-            time.sleep(poll_interval)
-            continue
-
-        # MongoDB adds a _id field that isn't JSON-serialisable; remove it
-        message.pop("_id", None)
-        print(f"\nPicked up message: {message['id']} ({message['task_type']})")
-
-        response = agent.handle_message(message)
-
-        # None means a RecoverableError occurred — message was re-queued, nothing to write
-        if response is None:
-            print(f"Message {message['id']} re-queued pending token replenishment.")
-            time.sleep(poll_interval)
-            continue
-
-        # Write the response back so the PM agent can read it
-        write_response(db, response)
-        # MongoDB mutates the dict by adding _id (ObjectId) when inserting —
-        # pop it so json.dumps doesn't crash on the non-serialisable type.
-        response.pop("_id", None)
-
-        # Mark the original message as done (or failed)
-        final_status = "done" if response.get("status") == "done" else "error"
-        mark_source_done(db, message["id"], final_status, response.get("error", ""))
-
-        print(f"Response written for message {message['id']}. Status: {final_status}")
-        print(json.dumps(response, indent=2))
-
 if __name__ == "__main__":
-    if os.environ.get("ENGINEERING_OFFLINE_DEMO_MONGO") == "1":
-        run_offline_mongo_worker()
-    else:
-        run_router_worker()
+    run_router_worker()

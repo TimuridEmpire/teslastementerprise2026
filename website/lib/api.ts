@@ -1,6 +1,6 @@
 /**
  * enterprise_router API client.
- * All calls go through FastAPI — never directly to MongoDB.
+ * All calls go through FastAPI — never directly to the database.
  * See UI-Team.md §5 and §8 for endpoint contracts.
  */
 import type {
@@ -8,10 +8,16 @@ import type {
   ApiHealth, ApiInterventionBody, ApiEnvelope, ApiQueueItemWire,
   DeliveryState, MessageStatus, ApiArtifact,
 } from './api-types'
+import { getCachedAdminSecret, getCachedManagerKey } from './memory'
 
-const BASE         = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
-const ADMIN_SECRET = process.env.NEXT_PUBLIC_ADMIN_SECRET ?? ''
-const MANAGER_KEY  = process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? ''
+const BASE             = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
+const ADMIN_SECRET_ENV = process.env.NEXT_PUBLIC_ADMIN_SECRET ?? ''
+const MANAGER_KEY_ENV  = process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? ''
+
+// A value saved via the Settings page (memory.ts, encrypted cookie) takes
+// precedence over the build-time env var once loaded into the cache.
+const resolveAdminSecret = () => getCachedAdminSecret() ?? ADMIN_SECRET_ENV
+const resolveManagerKey  = () => getCachedManagerKey() ?? MANAGER_KEY_ENV
 
 // ─── Low-level helpers ────────────────────────────────────────────────────────
 
@@ -120,13 +126,13 @@ function normalizeQueueItems(raw: unknown): ApiQueueItem[] {
 
 // Auth header factories
 function adminH(): Record<string,string> {
-  return { 'X-Admin-Secret': ADMIN_SECRET }
+  return { 'X-Admin-Secret': resolveAdminSecret() }
 }
 function agentH(agentName: string, apiKey: string): Record<string,string> {
   return { Authorization: `Bearer ${apiKey}`, 'X-Agent-Id': agentName }
 }
 function managerH(): Record<string,string> {
-  return agentH('MANAGER', MANAGER_KEY)
+  return agentH('MANAGER', resolveManagerKey())
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -138,7 +144,7 @@ export const api = {
 
   agents: {
     // GET /agents  (agent auth — uses MANAGER key when called from dashboard)
-    list: (agentName = 'MANAGER', apiKey = MANAGER_KEY, status?: string) =>
+    list: (agentName = 'MANAGER', apiKey = resolveManagerKey(), status?: string) =>
       get<ApiAgent[]>(status ? `/agents?status=${status}` : '/agents', agentH(agentName, apiKey)),
 
     // POST /agents  (admin)

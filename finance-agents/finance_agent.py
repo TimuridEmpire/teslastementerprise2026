@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -93,6 +94,30 @@ class FinanceAgent(BaseAgent):
         logger.info("[Finance] Initializing token registry...")
         self.token_manager.initialize_registry()
         logger.info("[Finance] Token registry ready.")
+
+    async def escalate_to_ceo(self, task_type: str, reason: str, payload: dict) -> dict:
+        """
+        Notify CEO via the Enterprise Router instead of BaseAgent's local-bus
+        implementation — FinanceAgent is router-integrated and has no
+        in-memory MessageBus wired up (self.bus is None by default).
+        """
+        envelope = Message.create(
+            sender=self.name,
+            recipient="CEO",
+            task_type=f"ESCALATION_{task_type}",
+            context={"escalated": True, "escalated_at": datetime.now(timezone.utc).isoformat()},
+            payload={"reason": reason, **payload},
+        )
+        try:
+            self.router_client.submit_message(envelope)
+        except Exception as exc:
+            logger.warning("[Finance] Could not notify CEO of escalation: %s", exc)
+        logger.info("[Finance] Escalated to CEO: %s", reason)
+        approved = payload.get("amount_usd", 0) < 50_000
+        return {
+            "approved": approved,
+            "ceo_note": "Approved via simulated CEO" if approved else "Rejected: over budget cap",
+        }
 
     # ── Required by BaseAgent ABC ─────────────────────────────────────────────
 
@@ -314,6 +339,7 @@ Return JSON with: findings (list), severity (low/medium/high), token_cost_summar
             payload=reply_msg.payload,
             context=reply_msg.context,
             status=reply_msg.status,
+            token_usage=reply_msg.token_usage or {},
         )
         try:
             self.router_client.submit_message(envelope)

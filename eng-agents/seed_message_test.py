@@ -1,8 +1,6 @@
 """
-Insert a test PM -> Engineering message via the enterprise router.
-
-When ENTERPRISE_ROUTER_OFFLINE_DEMO=1 is set, this falls back to the legacy
-Mongo demo inbox so older local demos can still be exercised intentionally.
+Insert a test PM -> Engineering message via the enterprise router (or the
+local in-process MessageBus when ENTERPRISE_ROUTER_OFFLINE_DEMO=1).
 """
 
 from __future__ import annotations
@@ -17,7 +15,6 @@ if str(_ROOT) not in sys.path:
 from agent_transport import (
     AGENT_ENGINEERING,
     AGENT_PM,
-    local_fallback_enabled,
     make_envelope,
     submit,
 )
@@ -48,19 +45,8 @@ message = make_envelope(
 
 
 def main() -> None:
-    if not local_fallback_enabled():
-        mid = submit(message)
-        print(f"Submitted via enterprise router: message_id={mid}")
-        return
-
-    from pymongo import MongoClient
-    from enterprise_paths import inter_agent_mongo_db_name, inter_agent_mongo_uri
-
-    client = MongoClient(inter_agent_mongo_uri())
-    db = client[inter_agent_mongo_db_name()]
-    result = db.messages.insert_one(message)
-    print(f"Inserted legacy Mongo demo message _id={result.inserted_id}")
-    print("Engineering agent will pick this up only when ENTERPRISE_ROUTER_OFFLINE_DEMO=1.")
+    mid = submit(message)
+    print(f"Submitted via enterprise router (or local bus): message_id={mid}")
 
 
 if __name__ == "__main__":

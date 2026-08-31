@@ -47,6 +47,7 @@ if FastAPI is not None:  # pragma: no cover - imported only when fastapi exists
         payload: dict[str, Any] = Field(default_factory=dict)
         status: str
         error: str = ""
+        token_usage: dict[str, Any] = Field(default_factory=dict)
 
     class SubmitMessageBody(BaseModel):
         message: MessageBody
@@ -92,10 +93,7 @@ def create_app(settings: RouterSettings | None = None):
 
     settings = settings or RouterSettings.from_env()
     router = EnterpriseRouter(
-        backend=settings.backend,
         db_path=settings.sqlite_db_path,
-        mongo_uri=settings.mongo_uri,
-        mongo_db_name=settings.mongo_db_name,
         shared_secret=settings.shared_secret,
     )
     app = FastAPI(title="Enterprise Router API", version="0.2.0")
@@ -138,7 +136,7 @@ def create_app(settings: RouterSettings | None = None):
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok", "backend": settings.backend}
+        return {"status": "ok", "backend": "sqlite"}
 
     @app.post("/registrations/request")
     def request_registration(body: RegistrationRequestBody) -> dict[str, Any]:

@@ -104,7 +104,7 @@ export interface ApiArtifact {
 // ─── Health ───────────────────────────────────────────────────────────────────
 export interface ApiHealth {
   status:  string
-  backend: 'sqlite' | 'mongo'
+  backend: 'sqlite'
 }
 
 // ─── Manager intervention ─────────────────────────────────────────────────────

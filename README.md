@@ -89,7 +89,6 @@ Key files:
 - `enterprise_router/models.py`
 - `enterprise_router/router_storage.py`
 - `enterprise_router/sqlite_storage.py`
-- `enterprise_router/mongo_storage.py`
 - `enterprise_router/config.py`
 - `enterprise_router/agent_artifacts.py`
 
@@ -105,9 +104,8 @@ Key files:
 - `message_bus.py`
 - `agent_backlog.py`
 - `inter_agent_api.py`
-- `inter_agent_mongo.py`
 
-In normal runtime, `enterprise_router_client.py` and `agent_transport.py` are the main route. `message_bus.py` and legacy Mongo paths are reserved for explicit offline/demo scenarios.
+In normal runtime, `enterprise_router_client.py` and `agent_transport.py` are the main route. `message_bus.py` is reserved for explicit offline/demo scenarios.
 
 ### 4. Website Layer
 
@@ -174,7 +172,7 @@ Local execution log. This is useful for debugging and local history, but it is n
 
 `enterprise_paths.py`
 
-Centralizes local paths and environment-based persistence settings for backlog DBs, JSONL logs, MongoDB, router URL, and artifacts.
+Centralizes local paths and environment-based persistence settings for backlog DBs, JSONL logs, router URL, and artifacts.
 
 ### Enterprise Router Package
 
@@ -198,10 +196,6 @@ Storage interface and factory for router persistence.
 
 SQLite implementation of router persistence. This is the normal local-development backend.
 
-`enterprise_router/mongo_storage.py`
-
-MongoDB implementation of the same storage contract. This is optional and should be used only when intentionally running the router with MongoDB.
-
 `enterprise_router/agent_artifacts.py`
 
 Writes markdown deliverables from agents into `artifacts/`, indexes them, and serves public-safe artifact metadata/content through the router API.
@@ -224,7 +218,7 @@ Next.js scripts and dependencies.
 
 `website/lib/api.ts`
 
-The website API client. It calls the router over HTTP. It does not read MongoDB or SQLite directly.
+The website API client. It calls the router over HTTP. It does not read SQLite directly.
 
 `website/lib/hooks.ts`
 
@@ -701,7 +695,7 @@ The website's observability page relies heavily on audit data.
 
 ## Frontend and Backend Intersection
 
-The frontend and backend meet at the Enterprise Router API. The website does not bypass the backend by reading SQLite, MongoDB, or local files directly. That is intentional.
+The frontend and backend meet at the Enterprise Router API. The website does not bypass the backend by reading SQLite or local files directly. That is intentional.
 
 ### What the Backend Provides
 
@@ -1157,10 +1151,6 @@ If Ollama is not running:
 
 ### Router Runtime
 
-`ENTERPRISE_ROUTER_BACKEND`
-
-Router storage backend. Use `sqlite` for normal local development. `mongo` is optional.
-
 `ENTERPRISE_ROUTER_DB`
 
 SQLite DB path for router persistence.
@@ -1257,27 +1247,11 @@ JSONL path for local message-bus audit output.
 
 Directory for markdown artifacts. Default is `<repo>/artifacts`.
 
-`MONGODB_URI`
-
-MongoDB connection string used by optional Mongo paths.
-
-`ENTERPRISE_ROUTER_MONGO_DB`
-
-Mongo database name for router Mongo backend.
-
-`ENTERPRISE_MONGO_INTER_AGENT_DB`
-
-Legacy/optional inter-agent Mongo database name.
-
 ### Engineering
 
 `ENGINEERING_LIGHT_DEMO`
 
 Forces Engineering light-demo mode.
-
-`ENGINEERING_OFFLINE_DEMO_MONGO`
-
-Uses legacy Mongo polling path for Engineering. Normal runtime should use the router instead.
 
 `OUTPUT_DIR`
 
@@ -1305,15 +1279,11 @@ Polling interval for some workers.
 
 When set to `1`, allows explicit local `MessageBus` fallback for tests or demos. Do not use this for normal runtime.
 
-`PM_STORAGE_BACKEND`
-
-PM/Marketing storage backend. Leave unset for local file storage unless Mongo is intentionally needed.
-
 ## Storage Backends
 
 ### SQLite
 
-SQLite is the default and recommended local router backend.
+SQLite is the only router backend.
 
 Advantages:
 
@@ -1321,18 +1291,6 @@ Advantages:
 - No external database required.
 - Good for demos and tests.
 - Stores router agents, queue records, leases, and audit events.
-
-### MongoDB
-
-MongoDB is optional.
-
-Use Mongo only when:
-
-- You intentionally want router persistence in Mongo.
-- You have a configured local or remote MongoDB instance.
-- You have set environment variables securely.
-
-Do not hardcode credentials in source files.
 
 ### Local Files
 
@@ -1459,16 +1417,6 @@ Fix:
 
 - Stop and restart `npm run dev`.
 
-### PM or Marketing tries to connect to MongoDB
-
-Likely cause:
-
-- `PM_STORAGE_BACKEND=mongo` is set.
-
-Fix:
-
-- Unset `PM_STORAGE_BACKEND` for local file storage, or intentionally start/configure MongoDB.
-
 ### Engineering starts in light-demo mode
 
 Likely cause:
@@ -1500,7 +1448,6 @@ Do not commit:
 - `website/.env.local`
 - Real API keys.
 - Real admin secrets.
-- Real MongoDB credentials.
 - Private model credentials.
 - Generated files that contain sensitive customer or company information.
 
@@ -1511,7 +1458,6 @@ Operational safety practices:
 - Use the router instead of direct database writes for runtime communication.
 - Keep local demo secrets local.
 - Rotate generated keys if they are accidentally exposed.
-- Prefer SQLite for local demos unless Mongo is specifically required.
 - Avoid putting secrets in screenshots, artifacts, logs, or chat transcripts.
 - Treat artifact markdown as user-visible output.
 

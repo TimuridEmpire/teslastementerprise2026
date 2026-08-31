@@ -31,10 +31,7 @@ def _envelope(sender: str, recipient: str, task: str) -> dict:
 @pytest.fixture
 def router_client(tmp_path):
     settings = RouterSettings(
-        backend="sqlite",
         sqlite_db_path=str(tmp_path / "e2e_router.db"),
-        mongo_uri="mongodb://localhost:27017/",
-        mongo_db_name="e2e_unused",
         shared_secret="reg-shared",
         admin_secret="admin-e2e",
         api_host="127.0.0.1",
@@ -74,7 +71,7 @@ def test_health(router_client):
     client, settings = router_client
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "backend": settings.backend}
+    assert resp.json() == {"status": "ok", "backend": "sqlite"}
 
 
 def test_registration_approve_and_message_lifecycle(router_client):

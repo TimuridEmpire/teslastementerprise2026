@@ -1,11 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Activity, Layers, GitBranch, TrendingUp,
   Crown, Package, Code2, Users, DollarSign, Megaphone,
-  ArrowRight, CheckCircle2, Circle, FileText,
+  ArrowRight, CheckCircle2, Circle, FileText, Download,
 } from 'lucide-react'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
@@ -18,6 +18,7 @@ import {
 } from '@/lib/mock-data'
 import { useHealth, useAudit, useQueue, useArtifacts } from '@/lib/hooks'
 import { auditToThroughput } from '@/lib/live-metrics'
+import { downloadArtifactsReportPdf, getLastReportGeneratedAt } from '@/lib/memory'
 import type { AgentId } from '@/lib/types'
 import type { ApiArtifact, ApiAuditEvent, ApiQueueItem } from '@/lib/api-types'
 
@@ -48,6 +49,25 @@ function Sparkline({ data, color = 'var(--primary)', height = 28 }: { data: numb
 // ─── Pulse Tab ─────────────────────────────────────────────────────────────
 function LatestWorkPanel({ artifacts }: { artifacts: ApiArtifact[] | null }) {
   const latest = artifacts?.[0] ?? null
+  const [downloading, setDownloading] = useState(false)
+  const [lastGenerated, setLastGenerated] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLastGenerated(getLastReportGeneratedAt())
+  }, [])
+
+  async function handleDownloadReport() {
+    setDownloading(true)
+    try {
+      await downloadArtifactsReportPdf()
+      setLastGenerated(getLastReportGeneratedAt())
+    } catch (err) {
+      console.error('Failed to generate artifact report PDF:', err)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   return (
     <div className="card" style={{ padding: 26, display: 'flex', flexDirection: 'column', minHeight: 320 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
@@ -55,10 +75,28 @@ function LatestWorkPanel({ artifacts }: { artifacts: ApiArtifact[] | null }) {
           <FileText size={14} style={{ color: 'var(--primary-2)' }} />
           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>Latest agent output</div>
         </div>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: latest ? 'var(--green)' : 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-          {latest && <span className="live-dot" style={{ width: 5, height: 5 }} />}
-          {latest ? 'live' : 'waiting'}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={handleDownloadReport}
+            disabled={downloading}
+            className="btn btn-secondary"
+            title={
+              lastGenerated
+                ? `Aggregates every artifact into one PDF. Last generated ${new Date(lastGenerated).toLocaleString()}.`
+                : 'Aggregates every artifact into one downloadable PDF report.'
+            }
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '5px 10px' }}
+          >
+            {downloading
+              ? <div className="spinner" style={{ width: 11, height: 11 }} />
+              : <Download size={11} />}
+            {downloading ? 'Generating…' : 'Download report'}
+          </button>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, color: latest ? 'var(--green)' : 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+            {latest && <span className="live-dot" style={{ width: 5, height: 5 }} />}
+            {latest ? 'live' : 'waiting'}
+          </span>
+        </div>
       </div>
       {latest ? (
         <>

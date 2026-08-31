@@ -30,13 +30,9 @@ def _envelope(sender: str, recipient: str, task: str) -> MessageEnvelope:
     )
 
 
-@pytest.fixture(params=["sqlite"])
-def store(request, tmp_path):
-    backend = request.param
-    if backend == "sqlite":
-        path = str(tmp_path / "router_storage.db")
-        return create_storage(backend="sqlite", db_path=path)
-    pytest.skip("Mongo router tests require a live MongoDB instance")
+@pytest.fixture
+def store(tmp_path):
+    return create_storage(db_path=str(tmp_path / "router_storage.db"))
 
 
 def test_register_agent_and_api_key(store):
@@ -124,12 +120,12 @@ def test_dedupe_find(store):
 
 
 def test_create_storage_factory(tmp_path):
-    s = create_storage(backend="sqlite", db_path=str(tmp_path / "factory.db"))
+    s = create_storage(db_path=str(tmp_path / "factory.db"))
     assert s.get_agent("missing") is None
 
 
 def test_enterprise_router_uses_injected_storage(tmp_path):
-    storage = create_storage(backend="sqlite", db_path=str(tmp_path / "svc.db"))
+    storage = create_storage(db_path=str(tmp_path / "svc.db"))
     router = EnterpriseRouter(storage=storage, shared_secret="reg")
     router.register_agent(AgentRecord(agent_name="CEO", role="executive"))
     router.register_agent(AgentRecord(agent_name="HR", role="hr"))

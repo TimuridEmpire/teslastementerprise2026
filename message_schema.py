@@ -9,7 +9,7 @@ agent transport, and department agents) should build and validate messages here.
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
 
@@ -28,6 +28,11 @@ class Message:
     payload: Dict[str, Any]
     status: str
     error: str = ""
+    # Optional — not in REQUIRED_FIELDS (older envelopes without it are still
+    # valid), but preserved end-to-end so Finance/Sales cost telemetry
+    # (finance_schema.AgentMessage.token_usage) survives conversion to/from
+    # this schema instead of being silently dropped.
+    token_usage: Dict[str, Any] = field(default_factory=dict)
 
     REQUIRED_FIELDS = (
         "id",
@@ -54,6 +59,7 @@ class Message:
         status: str = "pending",
         error: str = "",
         message_id: Optional[str] = None,
+        token_usage: Optional[Dict[str, Any]] = None,
     ) -> Message:
         """Factory for a new outbound envelope (UUID + ISO-8601 UTC timestamp)."""
         msg = Message(
@@ -66,18 +72,29 @@ class Message:
             payload=payload or {},
             status=status,
             error=error or "",
+            token_usage=token_usage or {},
         )
         if message_id:
             msg.id = message_id
         return msg
 
     def to_dict(self) -> EnvelopeDict:
-        return asdict(self)
+        data = asdict(self)
+        # Keep the wire shape identical to before token_usage existed when
+        # there's nothing to report — avoids breaking exact-envelope
+        # equality checks (router API responses, audit/backlog snapshots)
+        # for the overwhelming majority of messages that carry no cost data.
+        if not data.get("token_usage"):
+            data.pop("token_usage", None)
+        return data
 
     @classmethod
     def from_dict(cls, raw: EnvelopeDict, *, validate: bool = True) -> Message:
         data = normalize_envelope(raw, validate=validate)
-        return cls(**{k: data[k] for k in cls.REQUIRED_FIELDS})
+        return cls(
+            **{k: data[k] for k in cls.REQUIRED_FIELDS},
+            token_usage=data.get("token_usage") or {},
+        )
 
     @staticmethod
     def validate_envelope(message: EnvelopeDict) -> None:
@@ -125,6 +142,9 @@ def normalize_envelope(
         "status": data.get("status", "pending") or "pending",
         "error": data.get("error", "") or "",
     }
+    raw_token_usage = data.get("token_usage")
+    if isinstance(raw_token_usage, dict) and raw_token_usage:
+        normalized["token_usage"] = raw_token_usage
     if validate:
         Message.validate_envelope(normalized)
     return normalized

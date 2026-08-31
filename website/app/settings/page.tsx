@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { Settings, Database, Key, Zap, Check, AlertCircle, RefreshCw, Eye, EyeOff, Save } from 'lucide-react'
 import { api } from '@/lib/api'
+import { saveAdminSecret, saveManagerKey, initCredentialsFromCookies, getCachedAdminSecret, getCachedManagerKey } from '@/lib/memory'
 
 interface FieldState { value: string; show?: boolean; saved?: boolean; error?: string }
 
@@ -14,10 +15,18 @@ export default function SettingsPage() {
   const [saved,        setSaved]        = useState(false)
 
   useEffect(() => {
-    setApiUrl({ value: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000' })
-    setAdminSecret({ value: process.env.NEXT_PUBLIC_ADMIN_SECRET ?? '', show: false })
-    setManagerKey({ value: process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '', show: false })
+    setApiUrl({ value: getLocalApiUrl() })
+    // A value saved here previously (encrypted cookie) takes precedence over
+    // the build-time env var placeholder.
+    initCredentialsFromCookies().then(() => {
+      setAdminSecret({ value: getCachedAdminSecret() ?? process.env.NEXT_PUBLIC_ADMIN_SECRET ?? '', show: false })
+      setManagerKey({ value: getCachedManagerKey() ?? process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '', show: false })
+    })
   }, [])
+
+  function getLocalApiUrl(): string {
+    return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
+  }
 
   async function checkHealth() {
     setHealth('checking')
@@ -29,7 +38,11 @@ export default function SettingsPage() {
     }
   }
 
-  function handleSave() {
+  async function handleSave() {
+    await Promise.all([
+      saveAdminSecret(adminSecret.value),
+      saveManagerKey(managerKey.value),
+    ])
     setSaved(true)
     setTimeout(() => setSaved(false), 2500)
   }
@@ -89,7 +102,8 @@ export default function SettingsPage() {
         <h1 style={{ fontSize: 22, fontWeight: 600, color: 'var(--text-1)', letterSpacing: '-0.02em' }}>Settings</h1>
         <p style={{ fontSize: 13, color: 'var(--text-3)', marginTop: 4 }}>
           Manage your Kanosei backend connection and API credentials.
-          Changes here apply in the current browser session. Configure your runtime environment using{' '}
+          Saved credentials persist in this browser (encrypted at rest) across reloads until cleared.
+          Configure your runtime environment using{' '}
           <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11, background: 'var(--card)', padding: '1px 5px', borderRadius: 4 }}>
             .env.local.example
           </code>{' '}

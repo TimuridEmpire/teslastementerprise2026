@@ -10,15 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-try:
-    from pymongo import DESCENDING, MongoClient
-    from pymongo.database import Database
-except ImportError:  # pragma: no cover - optional local dependency
-    DESCENDING = -1
-    MongoClient = None
-    Database = Any
-
-from enterprise_paths import backlog_db_path, inter_agent_mongo_db_name, inter_agent_mongo_uri
+from enterprise_paths import backlog_db_path
 
 
 def _utc_now() -> str:
@@ -26,14 +18,12 @@ def _utc_now() -> str:
 
 
 class PMStorage:
-    """
-    Domain persistence for PM and Marketing agents.
+    """Domain persistence for PM and Marketing agents, backed by a local JSON file.
+
     Does not handle the enterprise message router queue.
     """
 
-    def __init__(self, mongo_uri: Optional[str] = None, db_name: Optional[str] = None) -> None:
-        uri = mongo_uri or inter_agent_mongo_uri()
-        name = db_name or inter_agent_mongo_db_name()
+    def __init__(self) -> None:
         default_data_dir = os.path.dirname(backlog_db_path()) or "data"
         self.backlog_path = os.getenv(
             "BACKLOG_PATH", os.path.join(default_data_dir, "pm_backlog.json")
@@ -41,23 +31,7 @@ class PMStorage:
         self.local_store_path = os.getenv(
             "PM_STORAGE_PATH", os.path.join(default_data_dir, "pm_storage.json")
         )
-        self.backend = os.getenv("PM_STORAGE_BACKEND", "file").strip().lower()
-        self.client = None
-        self.db: Database | None = None
-        if self.backend == "mongo":
-            if MongoClient is None:
-                raise RuntimeError("PM_STORAGE_BACKEND=mongo requires pymongo.")
-            self.client = MongoClient(uri)
-            self.db = self.client[name]
-            self._init_db()
-        else:
-            self._init_file_store()
-
-    def _init_db(self) -> None:
-        assert self.db is not None
-        self.db["projects"].create_index("status")
-        self.db["project_events"].create_index("project_id")
-        self.db["backlog_entries"].create_index("project_id")
+        self._init_file_store()
 
     def _init_file_store(self) -> None:
         store_dir = os.path.dirname(self.local_store_path)
@@ -118,97 +92,48 @@ class PMStorage:
         resolved_id = project_id or str(uuid.uuid4())
         resolved_description = description or metadata.get("description", "")
 
-        if self.backend != "mongo":
-            data = self._read_store()
-            existing = next((p for p in data["projects"] if p.get("_id") == resolved_id), None)
-            if existing:
-                existing.update({
-                    "name": name,
-                    "goal": goal,
-                    "description": resolved_description,
-                    "status": status,
-                    "metadata": metadata,
-                    "updated_at": now,
-                })
-                doc = existing
-            else:
-                doc = {
-                    "_id": resolved_id,
-                    "name": name,
-                    "goal": goal,
-                    "description": resolved_description,
-                    "status": status,
-                    "metadata": metadata,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                data["projects"].append(doc)
-            self._write_store(data)
-            return self._project_doc_to_record(doc)
-
-        assert self.db is not None
-        existing = self.db["projects"].find_one({"_id": resolved_id})
+        data = self._read_store()
+        existing = next((p for p in data["projects"] if p.get("_id") == resolved_id), None)
         if existing:
-            self.db["projects"].update_one(
-                {"_id": resolved_id},
-                {
-                    "$set": {
-                        "name": name,
-                        "goal": goal,
-                        "description": resolved_description,
-                        "status": status,
-                        "metadata": metadata,
-                        "updated_at": now,
-                    }
-                },
-            )
+            existing.update({
+                "name": name,
+                "goal": goal,
+                "description": resolved_description,
+                "status": status,
+                "metadata": metadata,
+                "updated_at": now,
+            })
+            doc = existing
         else:
-            self.db["projects"].insert_one(
-                {
-                    "_id": resolved_id,
-                    "name": name,
-                    "goal": goal,
-                    "description": resolved_description,
-                    "status": status,
-                    "metadata": metadata,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            )
-        return self.get_project(resolved_id) or {}
-
-    def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
-        if self.backend != "mongo":
-            data = self._read_store()
-            doc = next((p for p in data["projects"] if p.get("_id") == project_id), None)
-            return self._project_doc_to_record(doc) if doc else None
-
-        assert self.db is not None
-        doc = self.db["projects"].find_one({"_id": project_id})
-        if not doc:
-            return None
+            doc = {
+                "_id": resolved_id,
+                "name": name,
+                "goal": goal,
+                "description": resolved_description,
+                "status": status,
+                "metadata": metadata,
+                "created_at": now,
+                "updated_at": now,
+            }
+            data["projects"].append(doc)
+        self._write_store(data)
         return self._project_doc_to_record(doc)
 
-    def find_active_project_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        if self.backend != "mongo":
-            data = self._read_store()
-            matches = [
-                p for p in data["projects"]
-                if p.get("name") == name and p.get("status", "active") == "active"
-            ]
-            if not matches:
-                return None
-            doc = sorted(matches, key=lambda p: str(p.get("updated_at", "")), reverse=True)[0]
-            return self._project_doc_to_record(doc)
+    def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        data = self._read_store()
+        doc = next((p for p in data["projects"] if p.get("_id") == project_id), None)
+        return self._project_doc_to_record(doc) if doc else None
 
-        assert self.db is not None
-        doc = self.db["projects"].find_one(
-            {"name": name, "status": "active"},
-            sort=[("updated_at", DESCENDING)],
-        )
-        if not doc:
+    def find_active_project_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        data = self._read_store()
+        matches = [
+            p for p in data["projects"]
+            if p.get("name") == name and p.get("status", "active") == "active"
+        ]
+        if not matches:
             return None
-        return self.get_project(doc["_id"])
+        doc = sorted(matches, key=lambda p: str(p.get("updated_at", "")), reverse=True)[0]
+        return self._project_doc_to_record(doc)
 
     def add_project_event(
         self,
@@ -220,29 +145,8 @@ class PMStorage:
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
         now = _utc_now()
-        if self.backend != "mongo":
-            data = self._read_store()
-            data["project_events"].append(
-                {
-                    "_id": str(uuid.uuid4()),
-                    "project_id": project_id,
-                    "source": source,
-                    "event_type": event_type,
-                    "message_id": message_id,
-                    "details": details or {},
-                    "created_at": now,
-                }
-            )
-            if project_id:
-                for project in data["projects"]:
-                    if project.get("_id") == project_id:
-                        project["updated_at"] = now
-                        break
-            self._write_store(data)
-            return
-
-        assert self.db is not None
-        self.db["project_events"].insert_one(
+        data = self._read_store()
+        data["project_events"].append(
             {
                 "_id": str(uuid.uuid4()),
                 "project_id": project_id,
@@ -254,10 +158,11 @@ class PMStorage:
             }
         )
         if project_id:
-            self.db["projects"].update_one(
-                {"_id": project_id},
-                {"$set": {"updated_at": now}},
-            )
+            for project in data["projects"]:
+                if project.get("_id") == project_id:
+                    project["updated_at"] = now
+                    break
+        self._write_store(data)
 
     def save_backlog(
         self,
@@ -273,39 +178,15 @@ class PMStorage:
         if not project_id:
             return
 
-        if self.backend != "mongo":
-            data = self._read_store()
-            data["backlog_entries"] = [
-                entry for entry in data["backlog_entries"]
-                if entry.get("project_id") != project_id
-            ]
-            created_at = _utc_now()
-            for bucket, items in prioritized.items():
-                for feature in items:
-                    data["backlog_entries"].append(
-                        {
-                            "_id": str(uuid.uuid4()),
-                            "project_id": project_id,
-                            "bucket": bucket,
-                            "feature_name": str(feature.get("name", "")),
-                            "impact": str(feature.get("impact", "")),
-                            "created_at": created_at,
-                        }
-                    )
-            for project in data["projects"]:
-                if project.get("_id") == project_id:
-                    project["updated_at"] = _utc_now()
-                    break
-            self._write_store(data)
-            return
-
-        assert self.db is not None
-        self.db["backlog_entries"].delete_many({"project_id": project_id})
+        data = self._read_store()
+        data["backlog_entries"] = [
+            entry for entry in data["backlog_entries"]
+            if entry.get("project_id") != project_id
+        ]
         created_at = _utc_now()
-        docs = []
         for bucket, items in prioritized.items():
             for feature in items:
-                docs.append(
+                data["backlog_entries"].append(
                     {
                         "_id": str(uuid.uuid4()),
                         "project_id": project_id,
@@ -315,37 +196,17 @@ class PMStorage:
                         "created_at": created_at,
                     }
                 )
-        if docs:
-            self.db["backlog_entries"].insert_many(docs)
-
-        self.db["projects"].update_one(
-            {"_id": project_id},
-            {"$set": {"updated_at": _utc_now()}},
-        )
+        for project in data["projects"]:
+            if project.get("_id") == project_id:
+                project["updated_at"] = _utc_now()
+                break
+        self._write_store(data)
 
     def save_campaign(self, campaign: Dict[str, Any]) -> None:
         project_id = campaign.get("project_id")
         now = _utc_now()
-        if self.backend != "mongo":
-            data = self._read_store()
-            data["campaigns"].append(
-                {
-                    "_id": str(uuid.uuid4()),
-                    "project_id": project_id,
-                    "campaign": campaign,
-                    "created_at": now,
-                }
-            )
-            if project_id:
-                for project in data["projects"]:
-                    if project.get("_id") == project_id:
-                        project["updated_at"] = now
-                        break
-            self._write_store(data)
-            return
-
-        assert self.db is not None
-        self.db["campaigns"].insert_one(
+        data = self._read_store()
+        data["campaigns"].append(
             {
                 "_id": str(uuid.uuid4()),
                 "project_id": project_id,
@@ -354,10 +215,11 @@ class PMStorage:
             }
         )
         if project_id:
-            self.db["projects"].update_one(
-                {"_id": project_id},
-                {"$set": {"updated_at": now}},
-            )
+            for project in data["projects"]:
+                if project.get("_id") == project_id:
+                    project["updated_at"] = now
+                    break
+        self._write_store(data)
 
 
 # Backward-compatible alias

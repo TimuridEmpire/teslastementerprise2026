@@ -14,7 +14,10 @@ Design:
                        stubbed as TODO comments and will slot in here later
                        without any caller changes.
 
-Artifacts are written to ARTIFACTS_DIR (default "artifacts/").
+Artifacts are written under the same root as enterprise_router's own
+markdown artifacts (``enterprise_paths.artifacts_dir()``, i.e.
+ENTERPRISE_ARTIFACTS_DIR or ``<repo>/artifacts``) so both writers agree on an
+absolute location regardless of the calling agent's working directory.
 publish_artifact() is live: it uses agent_transport.submit(), which routes
 through the Enterprise Router when credentials are present and falls back to
 the local MessageBus in offline/demo mode (ENTERPRISE_ROUTER_OFFLINE_DEMO=1).
@@ -23,15 +26,15 @@ the local MessageBus in offline/demo mode (ENTERPRISE_ROUTER_OFFLINE_DEMO=1).
 from __future__ import annotations
 
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from enterprise_paths import artifacts_dir
 from pm_storage import storage
 
-ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", "artifacts")
+ARTIFACTS_DIR = artifacts_dir()
 
 logger = logging.getLogger(__name__)
 

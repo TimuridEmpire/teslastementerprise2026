@@ -1,6 +1,6 @@
 # Enterprise Router Implementation Guide
 
-This guide is the contract for teams implementing agent runtime logic. The router is the required runtime path for agent-to-agent communication. Local `MessageBus`, direct Mongo inboxes, and local backlog tables are only supplemental test/demo traces unless explicitly marked as offline demo mode.
+This guide is the contract for teams implementing agent runtime logic. The router is the required runtime path for agent-to-agent communication. The local `MessageBus` and local backlog tables are only supplemental test/demo traces unless explicitly marked as offline demo mode.
 
 ## Mental Model
 
@@ -365,5 +365,5 @@ If a team needs a new inbound task type, update the registration allowlist in `s
 - Do not invent router names; use exact registered names.
 - Do not add a new `task_type` without updating the registration allowlist.
 - Do not expose absolute artifact paths to the browser.
-- Do not use direct Mongo inboxes for runtime agent communication.
+- Do not write to a database directly for runtime agent communication; always go through the router.
 

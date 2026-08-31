@@ -29,7 +29,7 @@ def _envelope(sender: str, recipient: str, task: str) -> MessageEnvelope:
 @pytest.fixture
 def router(tmp_path):
     db = str(tmp_path / "router.db")
-    r = EnterpriseRouter(backend="sqlite", db_path=db, shared_secret="test-secret")
+    r = EnterpriseRouter(db_path=db, shared_secret="test-secret")
     r.register_agent(AgentRecord(agent_name="CEO", role="executive"))
     r.register_agent(AgentRecord(agent_name="HR", role="hr"))
     r.issue_api_key("CEO")
@@ -114,7 +114,7 @@ def test_demo_agent_allowed_task_contract_permits_live_chain(tmp_path):
     from scripts.bootstrap_router_agents import AGENTS
 
     db = str(tmp_path / "router.db")
-    router = EnterpriseRouter(backend="sqlite", db_path=db, shared_secret="test-secret")
+    router = EnterpriseRouter(db_path=db, shared_secret="test-secret")
     contracts = {
         name: allowed_task_types
         for name, _role, _hierarchy, _trust, allowed_task_types in AGENTS

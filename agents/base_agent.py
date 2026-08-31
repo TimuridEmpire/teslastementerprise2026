@@ -4,7 +4,7 @@ agents/base_agent.py — Base class for all Finance + Sales agents.
 Mirrors the Engineering agent's mold:
   - TokenBudget with per-role budgets, fallback, and HR escalation
   - RecoverableError for when all budgets are exhausted
-  - MongoDB-compatible message polling (same claim/write/mark pattern)
+  - Message polling for the production polling loop
   - Anthropic API calls with full token tracking
   - CEO escalation for spend > $10K
 """
@@ -125,31 +125,23 @@ class TokenBudget:
         )
 
     def _request_tokens_from_hr(self, db):
-        """Insert a TOKEN_REQUEST message into MongoDB for the HR agent."""
-        request = {
-            "id": str(uuid.uuid4()),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "sender": "FINANCE_SALES",
-            "recipient": "HR",
-            "task_type": "TOKEN_REQUEST",
-            "context": {},
-            "payload": {
-                "reason": "All Finance/Sales agent roles have exhausted their token budgets mid-task.",
-                "requested_budgets": DEFAULT_BUDGETS,
-            },
-            "status": "pending",
-            "error": "",
-            "token_usage": {},
-        }
-        if db is not None:
-            try:
-                db.messages.insert_one(request)
-                request.pop("_id", None)
-                logger.warning(f"[TokenBudget] TOKEN_REQUEST sent to HR: {request['id']}")
-            except Exception as e:
-                logger.error(f"[TokenBudget] Failed to send TOKEN_REQUEST to HR: {e}")
-        else:
-            logger.warning("[TokenBudget] TOKEN_REQUEST would be sent to HR (no DB connected)")
+        """Notify HR that Finance/Sales roles are out of token budget, via the
+        Enterprise Router (``db`` is unused — kept for call-site compatibility)."""
+        try:
+            from agent_transport import delegate
+
+            delegate(
+                sender="FINANCE_SALES",
+                recipient="HR",
+                task_type="TOKEN_REQUEST",
+                payload={
+                    "reason": "All Finance/Sales agent roles have exhausted their token budgets mid-task.",
+                    "requested_budgets": DEFAULT_BUDGETS,
+                },
+            )
+            logger.warning("[TokenBudget] TOKEN_REQUEST sent to HR.")
+        except Exception as e:
+            logger.error(f"[TokenBudget] Failed to send TOKEN_REQUEST to HR: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -163,14 +155,14 @@ class BaseAgent(ABC):
       - LLM calls with automatic token tracking + budget enforcement
       - CEO escalation for high-spend decisions
       - In-memory async bus send/receive (for local runs)
-      - MongoDB-compatible handle_message() (for production polling loop)
+      - handle_message() for a generic synchronous polling loop
     """
 
     def __init__(self, name: str, bus, system_prompt: str, db=None):
         self.name = name
         self.bus = bus
         self.system_prompt = system_prompt
-        self.db = db  # MongoDB handle — set when running in production polling mode
+        self.db = db  # optional polling-loop handle; unused by the router-integrated path
         self.tokens = TokenBudget()
 
         self.client = _requests  # requests module used for Ollama HTTP calls
@@ -290,7 +282,7 @@ class BaseAgent(ABC):
             context={"escalated": True, "escalated_at": datetime.now(timezone.utc).isoformat()},
             status="pending",
         )
-        await self.bus.send(msg.to_dict())
+        await self.bus.async_send(msg.to_dict())
         logger.info(f"[{self.name}] Escalated to CEO: {reason}")
         # Simulate: approve if under $50K
         approved = payload.get("amount_usd", 0) < 50_000
@@ -302,19 +294,19 @@ class BaseAgent(ABC):
     # ─── Bus Helpers (async in-memory mode) ─────────────────────────────────
 
     async def send(self, message: AgentMessage):
-        await self.bus.send(message.to_dict())
+        await self.bus.async_send(message.to_dict())
 
     async def receive(self, timeout: float = 30.0) -> Optional[AgentMessage]:
-        data = await self.bus.receive(self.name, timeout=timeout)
+        data = await self.bus.async_receive(self.name, timeout=timeout)
         if data:
             return AgentMessage.from_dict(data)
         return None
 
-    # ─── MongoDB Polling Mode (mirrors Engineering agent) ───────────────────
+    # ─── Synchronous Polling Mode (mirrors Engineering agent) ───────────────
 
     def handle_message(self, message: dict) -> dict:
         """
-        Synchronous handler for MongoDB polling loop — same interface as
+        Synchronous handler for a generic polling loop — same interface as
         EngineeringAgent.handle_message(). Called by the main polling loop.
         Resets token budget for each new top-level message.
         """
@@ -334,14 +326,12 @@ class BaseAgent(ABC):
             return response_msg.to_dict()
 
         except RecoverableError as e:
-            # Re-queue: set status back to pending so polling loop retries
+            # None signals the polling loop to skip writing a response and
+            # leave the source message queued for retry (the router already
+            # re-queues on nack; callers of this method are responsible for
+            # that when driving their own polling loop).
             logger.warning(f"[{self.name}] RecoverableError — message will be re-queued: {e}")
-            if self.db is not None:
-                self.db.messages.update_one(
-                    {"id": message.get("id")},
-                    {"$set": {"status": "pending"}}
-                )
-            return None  # None signals the polling loop to skip writing a response
+            return None
 
         except Exception as e:
             logger.error(f"[{self.name}] Error: {e}")
