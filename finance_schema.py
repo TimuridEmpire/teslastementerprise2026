@@ -111,10 +111,17 @@ class AgentMessage:
             token_usage=data.get("token_usage", {}),
         )
 
-    def reply(self, payload: dict, status: Status = "done", error: str = "") -> "AgentMessage":
+    def reply(
+        self,
+        payload: dict,
+        status: Status = "done",
+        error: str = "",
+        *,
+        task_type: str | None = None,
+    ) -> "AgentMessage":
         """Create a response message swapping sender/recipient."""
         return AgentMessage(
-            task_type=self.task_type,
+            task_type=task_type or self.task_type,
             sender=self.recipient,
             recipient=self.sender,
             payload=payload,

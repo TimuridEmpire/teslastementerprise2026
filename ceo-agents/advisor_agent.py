@@ -87,10 +87,15 @@ class AdvisorAgent(ThreadSafeAgentMixin):
         )
         result_payload["artifact_id"] = artifact.get("artifact_id")
 
+        response_task_type = (
+            "STRATEGY_REVIEW_RESULT"
+            if (proposal.sender or AGENT_CEO) == AGENT_CEO
+            else "PM_REPORT"
+        )
         advisory_response = make_envelope(
             sender=self.name,
             recipient=proposal.sender or AGENT_CEO,
-            task_type="STRATEGY_REVIEW_RESULT",
+            task_type=response_task_type,
             context={
                 "original_task": task_type,
                 "review_cycle": "pre-execution",

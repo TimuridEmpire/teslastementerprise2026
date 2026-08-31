@@ -59,7 +59,7 @@ class MarketingAgent:
             task_type = m.get("task_type")
             if task_type == "LAUNCH_CAMPAIGN":
                 self.handle_launch_campaign(m)
-            elif task_type == "PM_REPORT":
+            elif task_type in {"PM_REPORT", "BUDGET_ALERT"}:
                 self.handle_pm_report(m)
             else:
                 self.logger.warning(f"MarketingAgent: unhandled task_type '{task_type}'")
@@ -238,6 +238,19 @@ class MarketingAgent:
             )
             self.logger.info(
                 f"MarketingAgent: campaign brief written to {brief_artifact['path']}"
+            )
+            write_agent_artifact(
+                self.name,
+                title=f"{product} Campaign Brief",
+                body=brief_md,
+                artifact_type="campaign_brief",
+                metadata={
+                    "project_id": project_id,
+                    "product_name": product,
+                    "source": "LAUNCH_CAMPAIGN",
+                },
+                source_message_id=str(msg.get("id", "")),
+                source_task_type="LAUNCH_CAMPAIGN",
             )
             # publish_artifact() sends ARTIFACT_PUBLISHED to CEO via the router.
             # It is non-fatal: a failure logs a warning and never raises.

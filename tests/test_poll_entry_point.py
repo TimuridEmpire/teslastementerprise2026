@@ -23,7 +23,10 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(__file__))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "finance-agents"))
+sys.path.insert(0, os.path.join(ROOT, "sales-agents"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,8 +89,8 @@ def run_poll():
     Each agent claims messages addressed to it, processes them, writes the response.
     RecoverableError → message re-queued, agent sleeps and retries.
     """
-    from agents.finance_agent import FinanceAgent
-    from agents.sales_agent import SalesAgent
+    from finance_agent import FinanceAgent
+    from sales_agent import SalesAgent
 
     print_banner()
     db = get_db()
@@ -139,14 +142,15 @@ def run_poll():
 # ---------------------------------------------------------------------------
 
 async def run_demo():
-    from bus.message_bus import bus
+    from message_bus import MessageBus
     from finance_schema import AgentMessage
-    from tools.finance_tools import (
+    from finance_tools import (
         get_budget_status, generate_pl_report, monte_carlo_forecast, log_revenue
     )
-    from tools.sales_tools import (
+    from sales_tools import (
         qualify_lead, generate_pitch, close_deal, get_pipeline_report
     )
+    bus = MessageBus()
 
     print_banner()
     print("=== DEMO: Launch SaaS Feature Scenario ===\n")
@@ -194,16 +198,17 @@ async def run_live():
         print("ERROR: OLLAMA_READY not set. Use 'python main.py demo' for stub mode.")
         sys.exit(1)
 
-    from bus.message_bus import bus
-    from agents.finance_agent import FinanceAgent
-    from agents.sales_agent import SalesAgent
-    from finance_finance_schema import AgentMessage
+    from message_bus import MessageBus
+    from finance_agent import FinanceAgent
+    from sales_agent import SalesAgent
+    from finance_schema import AgentMessage
+    bus = MessageBus()
 
     print_banner()
     print("Starting live agent loop...\n")
 
-    finance = FinanceAgent(bus)
-    sales   = SalesAgent(bus)
+    finance = FinanceAgent(bus=bus)
+    sales   = SalesAgent(bus=bus)
 
     async def seed_tasks():
         await asyncio.sleep(0.1)
@@ -222,7 +227,6 @@ async def run_live():
 
     await asyncio.gather(seed_tasks(), finance.run(max_cycles=20), sales.run(max_cycles=20))
 
-    bus.dump_log("logs/session_log.json")
     print("\nFinal Stats:")
     print(json.dumps(finance.get_status(), indent=2))
     print(json.dumps(sales.get_status(), indent=2))
@@ -240,8 +244,8 @@ if __name__ == "__main__":
     elif mode == "poll":
         run_poll()
     elif mode == "status":
-        from finance-agents.finance_tools import get_budget_status, generate_pl_report
-        from sales-agents.sales_tools import get_pipeline_report
+        from finance_tools import get_budget_status, generate_pl_report
+        from sales_tools import get_pipeline_report
         print_banner()
         print(json.dumps(get_budget_status("Q2-2026"), indent=2))
         print(json.dumps(generate_pl_report("Q2-2026"), indent=2))

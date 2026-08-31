@@ -769,6 +769,68 @@ class CeoAgent(ThreadSafeAgentMixin):
                 "engineering_status": eng_status,
             }
 
+        if task == "BUDGET_APPROVAL":
+            amount = payload.get("amount_usd", payload.get("budget", 0))
+            requester = str(envelope.get("sender") or "")
+            approved = True
+            self._write_strategy_artifact_unlocked(
+                title="CEO Budget Approval",
+                body=(
+                    "## Budget Request\n\n"
+                    f"- Requester: {requester or 'Unknown'}\n"
+                    f"- Amount: {amount}\n"
+                    f"- Initiative: {payload.get('initiative') or payload.get('category') or 'General'}\n\n"
+                    "## Decision\n\nApproved for execution.\n"
+                ),
+                artifact_type="budget-decision",
+                metadata={"source_task_type": "BUDGET_APPROVAL", "approved": approved},
+                source_task_type="BUDGET_APPROVAL",
+            )
+            if requester and requester != self.name:
+                try:
+                    self.send_router_envelope(
+                        recipient=requester,
+                        task_type="PM_REPORT",
+                        context={
+                            "source_message_id": str(envelope.get("id", "")),
+                            "source_task_type": "BUDGET_APPROVAL",
+                        },
+                        payload={
+                            "status": "budget_approved",
+                            "approved": approved,
+                            "amount_usd": amount,
+                            "initiative": payload.get("initiative") or payload.get("category"),
+                        },
+                    )
+                except Exception as exc:
+                    self.logger.warning("Unable to publish budget approval response: %s", exc)
+            return {
+                "ok": True,
+                "agent": self.name,
+                "task_type": task,
+                "approved": approved,
+                "amount_usd": amount,
+            }
+
+        if task == "BUDGET_ALERT":
+            self._write_strategy_artifact_unlocked(
+                title="CEO Budget Alert Intake",
+                body=(
+                    "## Budget Alert\n\n"
+                    f"{payload}\n\n"
+                    "## CEO Action\n\nAlert received for executive review.\n"
+                ),
+                artifact_type="budget-alert",
+                metadata={"source_task_type": "BUDGET_ALERT"},
+                source_task_type="BUDGET_ALERT",
+            )
+            return {
+                "ok": True,
+                "agent": self.name,
+                "task_type": task,
+                "status": "budget_alert_received",
+            }
+
         if task == "MINT_TOKENS":
             if not self.distribution_registry:
                 raise RuntimeError("CeoAgent has no distribution_registry attached.")

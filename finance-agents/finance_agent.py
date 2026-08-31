@@ -78,7 +78,7 @@ class FinanceAgent(BaseAgent):
     Uses EnterpriseRouterClient for all message passing.
     """
 
-    def __init__(self, router_client: EnterpriseRouterClient, bus=None, db=None):
+    def __init__(self, router_client: EnterpriseRouterClient | None = None, bus=None, db=None):
         super().__init__(
             name="Finance",
             bus=bus,
@@ -86,8 +86,10 @@ class FinanceAgent(BaseAgent):
             db=db,
         )
         self.router_client = router_client
+        if self.router_client is None and bus is None and db is None:
+            self.router_client = EnterpriseRouterClient.from_env(agent_name="Finance")
         self.token_manager = FinanceTokenManager(
-            router_client=router_client,
+            router_client=self.router_client,
             executive_name="CEO",
             cfo_name="Finance",
         )
@@ -214,12 +216,12 @@ key_risks (list of strings), recommendations (list of strings).
 
         payload = {**result, "pl_data": raw_pl, "budget": budget}
         self._write_artifact(msg, f"P&L report for {quarter}", "finance_report", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PM_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
     async def _handle_budget_approval(self, msg: AgentMessage) -> AgentMessage:
-        amount   = msg.payload.get("amount_usd", 0)
+        amount   = msg.payload.get("amount_usd", msg.payload.get("budget", 0))
         category = msg.payload.get("category", "general")
         quarter  = msg.payload.get("quarter", "Q2-2026")
 
@@ -233,11 +235,11 @@ key_risks (list of strings), recommendations (list of strings).
             if not ceo.get("approved"):
                 denied = {"approved": False, "reason": "CEO rejected"}
                 self._write_artifact(msg, "Budget approval denied", "budget_decision", denied)
-                return msg.reply(denied, status="done")
+                return msg.reply(denied, status="done", task_type="BUDGET_ALERT")
 
         result = allocate_budget(quarter, amount, category)
         self._write_artifact(msg, f"Budget decision for {category}", "budget_decision", result)
-        return msg.reply(result, status="done")
+        return msg.reply(result, status="done", task_type="BUDGET_ALERT")
 
     async def _handle_forecast(self, msg: AgentMessage) -> AgentMessage:
         p  = msg.payload
@@ -264,7 +266,7 @@ Return JSON with: narrative (2-3 sentences), risk_level, top_actions (list of 3 
         )
         payload = {**mc, "llm_interpretation": result}
         self._write_artifact(msg, "Cash flow forecast", "finance_forecast", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PM_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
@@ -281,7 +283,7 @@ Return JSON with: narrative (2-3 sentences), risk_level, top_actions (list of 3 
             p.get("deal_value_usd", 0), p.get("company"), p.get("deal_id"),
         )
         self._write_artifact(msg, "Revenue log", "revenue_log", result)
-        return msg.reply(result, status="done")
+        return msg.reply(result, status="done", task_type="PM_REPORT")
 
     async def _handle_audit(self, msg: AgentMessage) -> AgentMessage:
         quarter = msg.payload.get("quarter", "Q2-2026")
@@ -304,7 +306,7 @@ Return JSON with: findings (list), severity (low/medium/high), token_cost_summar
         )
         payload = {**audit, "llm_analysis": result}
         self._write_artifact(msg, f"Audit report for {quarter}", "finance_audit", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PM_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
@@ -317,7 +319,7 @@ Return JSON with: findings (list), severity (low/medium/high), token_cost_summar
             simulations=p.get("simulations", 1000),
         )
         self._write_artifact(msg, "Monte Carlo simulation", "finance_forecast", mc)
-        return msg.reply(mc, status="done")
+        return msg.reply(mc, status="done", task_type="PM_REPORT")
 
     async def _handle_token_topup_request(self, msg: AgentMessage) -> AgentMessage:
         """
@@ -331,17 +333,14 @@ Return JSON with: findings (list), severity (low/medium/high), token_cost_summar
             reason=msg.payload.get("reason", ""),
         )
         self._write_artifact(msg, f"Token top-up decision for {msg.sender}", "token_decision", result)
-        return msg.reply(result, status="done")
+        return msg.reply(result, status="done", task_type="TOKEN_TOPUP_NOTIFICATION")
 
     async def _handle_token_balance_query(self, msg: AgentMessage) -> AgentMessage:
         scenario = msg.payload.get("scenario_id", STANDARD_SCENARIO)
         balance  = self.token_manager.get_balance(msg.sender, scenario)
         payload = {"agent": msg.sender, "scenario_id": scenario, "balance": balance}
         self._write_artifact(msg, f"Token balance for {msg.sender}", "token_balance", payload)
-        return msg.reply(
-            payload,
-            status="done",
-        )
+        return msg.reply(payload, status="done", task_type="TOKEN_TOPUP_NOTIFICATION")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -355,10 +354,7 @@ Return JSON with: findings (list), severity (low/medium/high), token_cost_summar
             context=reply_msg.context,
             status=reply_msg.status,
         )
-        try:
-            self.router_client.submit_message(envelope)
-        except Exception as exc:
-            logger.warning("[Finance] Could not submit reply: %s", exc)
+        self.router_client.submit_message(envelope)
 
     def _send_budget_alert(self, quarter: str, budget: dict) -> None:
         alert = Message.create(

@@ -347,14 +347,29 @@ class BaseAgent(ABC):
     async def escalate_to_ceo(self, task_type: str, reason: str, payload: dict) -> dict:
         """Send escalation to CEO and wait for approval (simulated)."""
         msg = AgentMessage(
-            task_type=f"ESCALATION_{task_type}",
+            task_type="CEO_REASONING_LOOP",
             sender=self.name,
             recipient="CEO",
             payload={"reason": reason, **payload},
             context={"escalated": True, "escalated_at": datetime.now(timezone.utc).isoformat()},
             status="pending",
         )
-        await self.bus.send(msg.to_dict())
+        if self.bus is not None:
+            await self.bus.send(msg.to_dict())
+        else:
+            router_client = getattr(self, "router_client", None)
+            if router_client is not None:
+                from message_schema import Message
+
+                router_client.submit_message(
+                    Message.create(
+                        sender=msg.sender,
+                        recipient=msg.recipient,
+                        task_type=msg.task_type,
+                        payload=msg.payload,
+                        context=msg.context,
+                    )
+                )
         logger.info(f"[{self.name}] Escalated to CEO: {reason}")
         # Simulate: approve if under $50K
         approved = payload.get("amount_usd", 0) < 50_000

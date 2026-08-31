@@ -38,7 +38,12 @@ def router_api_key(agent_name: str | None = None) -> str | None:
     resolved_agent = agent_name or router_agent_name()
     agent_key = ""
     if resolved_agent:
-        agent_key = os.getenv(f"{resolved_agent.upper()}_AGENT_API_KEY", "")
+        env_agent = "".join(
+            char if char.isalnum() else "_" for char in resolved_agent.upper()
+        ).strip("_")
+        agent_key = os.getenv(f"{env_agent}_AGENT_API_KEY", "")
+        if not agent_key and resolved_agent == "Strategic Advisor":
+            agent_key = os.getenv("ADVISOR_AGENT_API_KEY", "")
     key = (
         os.getenv("ENTERPRISE_ROUTER_AGENT_API_KEY")
         or os.getenv("ENTERPRISE_AGENT_API_KEY")

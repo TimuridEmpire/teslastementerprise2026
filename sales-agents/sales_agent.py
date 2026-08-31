@@ -58,7 +58,9 @@ Always respond in JSON. Keep responses under 900 tokens.
 class SalesAgent(BaseAgent):
     def __init__(self, router_client: EnterpriseRouterClient | None = None, bus=None, db=None):
         super().__init__(name="Sales", bus=bus, system_prompt=SALES_SYSTEM_PROMPT, db=db)
-        self.router_client = router_client or EnterpriseRouterClient.from_env(agent_name="Sales")
+        self.router_client = router_client
+        if self.router_client is None and bus is None and db is None:
+            self.router_client = EnterpriseRouterClient.from_env(agent_name="Sales")
 
     async def handle(self, message: AgentMessage):
         task = message.task_type
@@ -134,10 +136,7 @@ class SalesAgent(BaseAgent):
             context=reply_msg.context,
             status=reply_msg.status,
         )
-        try:
-            self.router_client.submit_message(envelope)
-        except Exception as exc:
-            logger.warning("[Sales] Could not submit reply: %s", exc)
+        self.router_client.submit_message(envelope)
 
     def _submit_revenue_log(self, msg: AgentMessage, result: dict, final_value: float) -> None:
         revenue_msg = Message.create(
@@ -152,7 +151,12 @@ class SalesAgent(BaseAgent):
             },
             context={**msg.context, "auto_logged": True, "source_message_id": msg.id},
         )
-        self.router_client.submit_message(revenue_msg)
+        if self.bus is not None:
+            self.bus.send(revenue_msg.to_dict())
+        elif self.router_client is not None:
+            self.router_client.submit_message(revenue_msg)
+        else:
+            raise RuntimeError("Sales cannot submit revenue log without router_client or bus.")
         logger.info("[Sales] REVENUE_LOG -> Finance: $%.2f - %s", final_value, result["company"])
 
     async def _handle_campaign_launched(self, msg: AgentMessage):
@@ -163,14 +167,14 @@ class SalesAgent(BaseAgent):
             "next_action": "Qualify campaign leads and prioritize enterprise prospects.",
         }
         self._write_artifact(msg, "Campaign launch received", "sales_campaign_intake", payload)
-        return msg.reply(payload, status="done")
+        return msg.reply(payload, status="done", task_type="PM_REPORT")
 
     async def _handle_qualify(self, msg: AgentMessage):
         lead_id = msg.payload.get("lead_id", "")
         if not lead_id:
             payload = {"error": "lead_id required"}
             self._write_artifact(msg, "Lead qualification failed", "sales_qualification", payload)
-            return msg.reply(payload, status="error")
+            return msg.reply(payload, status="error", task_type="PIPELINE_REPORT")
 
         qual = qualify_lead(lead_id)
         prompt = f"""You are a senior sales rep reviewing a lead qualification result.
@@ -186,7 +190,7 @@ Return JSON with strategy, next_step, and priority.
         log_token_cost("Sales", "QUALIFY_LEAD", usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
         payload = {**qual, "llm_strategy": result}
         self._write_artifact(msg, f"Lead qualification for {lead_id}", "sales_qualification", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PIPELINE_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
@@ -196,7 +200,7 @@ Return JSON with strategy, next_step, and priority.
         base_pitch = generate_pitch(lead_id)
         if "error" in base_pitch:
             self._write_artifact(msg, "Pitch generation failed", "sales_pitch", base_pitch)
-            return msg.reply(base_pitch, status="error")
+            return msg.reply(base_pitch, status="error", task_type="PIPELINE_REPORT")
 
         objection_context = f"\n\nThe prospect raised this objection: '{objection}'. Address it directly." if objection else ""
         prompt = f"""Enhance this pitch to be more compelling and natural.{objection_context}
@@ -214,7 +218,7 @@ Return JSON with enhanced_pitch, subject_line, objection_response, and confidenc
         log_token_cost("Sales", "GENERATE_PITCH", usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
         payload = {**base_pitch, "llm_enhanced": result}
         self._write_artifact(msg, f"Sales pitch for {lead_id}", "sales_pitch", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PIPELINE_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
@@ -238,13 +242,13 @@ Return JSON with enhanced_pitch, subject_line, objection_response, and confidenc
             self.router_client.submit_message(approval)
             payload = {"status": "blocked", "reason": "CEO approval requested", "lead_id": lead_id}
             self._write_artifact(msg, f"Deal approval requested for {lead_id}", "sales_deal", payload)
-            return msg.reply(payload, status="done")
+            return msg.reply(payload, status="done", task_type="PIPELINE_REPORT")
 
         result = close_deal(lead_id, final_value, won)
         if won and "deal_id" in result:
             self._submit_revenue_log(msg, result, final_value)
         self._write_artifact(msg, f"Deal result for {lead_id}", "sales_deal", result)
-        return msg.reply(result, status="done")
+        return msg.reply(result, status="done", task_type="PIPELINE_REPORT")
 
     async def _handle_upsell(self, msg: AgentMessage):
         opportunities = identify_upsell_opportunities()
@@ -260,7 +264,7 @@ Return JSON with top_3, total_upsell_value_usd, and outreach_strategy.
         log_token_cost("Sales", "UPSELL", usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
         payload = {"opportunities": opportunities, "llm_analysis": result}
         self._write_artifact(msg, "Upsell opportunities", "sales_upsell", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PIPELINE_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
@@ -278,7 +282,7 @@ Return JSON with executive_summary, pipeline_health, and top_priority.
         log_token_cost("Sales", "PIPELINE_REPORT", usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
         payload = {**report, "llm_summary": result}
         self._write_artifact(msg, "Sales pipeline report", "sales_pipeline", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PIPELINE_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
@@ -298,7 +302,7 @@ Return JSON with agenda, key_value_props, and success_criteria.
         log_token_cost("Sales", "DEMO_REQUEST", usage.input_tokens, usage.output_tokens, usage.total_tokens, usage.cost_usd)
         payload = {"lead": qual, "demo_plan": result}
         self._write_artifact(msg, f"Demo plan for {lead_id}", "sales_demo", payload)
-        reply = msg.reply(payload, status="done")
+        reply = msg.reply(payload, status="done", task_type="PIPELINE_REPORT")
         reply.token_usage = usage.to_dict()
         return reply
 
