@@ -48,10 +48,11 @@ llm = (
 )
 
 # GitHub repo for generated output — set GITHUB_REPO_URL to a remote URL to enable push.
-# e.g. $env:GITHUB_REPO_URL = "https://github.com/your-org/generated-output.git"
-# Leave unset to push to a repo i made through a path that works on my computer
+# e.g. GITHUB_REPO_URL=https://github.com/your-org/generated-output.git
+# Leave unset to just commit locally with no push.
 GITHUB_REPO_URL = os.environ.get("GITHUB_REPO_URL", "")
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "C:\\repos\\eng_agent_testing")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(_REPO_ROOT, "eng_agent_testing"))
 
 def init_output_repo():
     """Ensure OUTPUT_DIR exists as a git repo, cloning from GITHUB_REPO_URL if set."""

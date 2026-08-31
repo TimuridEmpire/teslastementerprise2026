@@ -18,6 +18,13 @@ dataclasses-json==0.6.7
 distro==1.9.0
 dnspython==2.8.0
 exceptiongroup==1.3.1
+# Engineering agent full code-gen mode (CrewAI + local Ollama + git commit of
+# generated output). Without these, EngineeringAgent silently falls back to
+# ENGINEERING_LIGHT_DEMO-style stub artifacts instead of generating real code.
+crewai==1.15.18
+crewai-tools==1.15.18
+GitPython==3.1.61
+
 # Enterprise router API (inter-agent HTTP) + pytest E2E
 fastapi==0.135.3
 httpx==0.28.1
