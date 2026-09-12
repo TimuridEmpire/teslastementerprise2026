@@ -59,7 +59,7 @@ multidict==6.7.1
 mypy_extensions==1.1.0
 numpy==2.2.6
 ollama==0.6.1
-openai==2.26.0
+openai==2.54.0
 orjson==3.11.7
 ormsgpack==1.12.2
 packaging==26.0
@@ -69,14 +69,14 @@ pyasn1==0.6.2
 pyasn1_modules==0.4.2
 pycparser==3.0
 pydantic==2.12.5
-pydantic-settings==2.13.1
+pydantic-settings==2.15.0
 pydantic_core==2.41.5
 Pygments==2.20.0
 PyPDF2==3.0.1
 pytest==9.0.3
 python-dotenv==1.2.2
 PyYAML==6.0.3
-regex==2026.2.28
+regex==2026.1.15
 requests==2.32.5
 types-requests>=2.32.0
 requests-toolbelt==1.0.0
