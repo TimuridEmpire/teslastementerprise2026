@@ -5,22 +5,41 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Activity, Layers, GitBranch, TrendingUp,
   Crown, Package, Code2, Users, DollarSign, Megaphone,
-  ArrowRight, CheckCircle2, Circle, FileText, Download,
+  FileText, Download,
 } from 'lucide-react'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   PieChart, Pie, Cell, RadialBarChart, RadialBar,
   CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts'
-import {
-  AGENTS, COMPANY_KPIS, TASK_THROUGHPUT, REVENUE_FORECAST,
-  BUDGET_ALLOCATIONS, AGENT_LOAD, PIPELINE, MESSAGE_FLOW, KANOSEI_WORKFLOWS,
-} from '@/lib/mock-data'
+import { AGENTS, TASK_THROUGHPUT } from '@/lib/mock-data'
 import { useHealth, useAudit, useQueue, useArtifacts } from '@/lib/hooks'
-import { auditToThroughput } from '@/lib/live-metrics'
+import { auditToThroughput, auditToAgentStats, auditToMessageFlow, type AgentStat } from '@/lib/live-metrics'
 import { downloadArtifactsReportPdf, getLastReportGeneratedAt } from '@/lib/memory'
 import type { AgentId } from '@/lib/types'
 import type { ApiArtifact, ApiAuditEvent, ApiQueueItem } from '@/lib/api-types'
+
+// No router/agent surface reports revenue, budget, or sales-pipeline data
+// (see README "Live vs Mock Data") — Finance and Sales have no worker
+// implementation in this repo. Rather than show fabricated numbers next to
+// genuinely live ones, those panels are replaced with an explicit
+// "not available" notice below.
+function NotAvailablePanel({ title, subtitle, reason }: { title: string; subtitle: string; reason: string }) {
+  return (
+    <div className="card" style={{ padding: 22 }}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>{title}</div>
+        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>{subtitle}</div>
+      </div>
+      <div style={{
+        padding: 24, textAlign: 'center', color: 'var(--text-3)', fontSize: 12, lineHeight: 1.6,
+        border: '1px dashed var(--border)', borderRadius: 8, background: 'rgba(255,255,255,0.015)',
+      }}>
+        {reason}
+      </div>
+    </div>
+  )
+}
 
 // ─── Agent icon map ────────────────────────────────────────────────────────
 const AGENT_ICONS: Record<AgentId, React.ReactNode> = {
@@ -32,18 +51,11 @@ const AGENT_COLOR: Record<AgentId, string> = {
   ceo: 'var(--agent-ceo)', product: 'var(--agent-product)', engineering: 'var(--agent-engineering)',
   hr: 'var(--agent-hr)', sales: 'var(--agent-sales)', marketing: 'var(--agent-marketing)', finance: 'var(--agent-finance)',
 }
-
-// ─── Sparkline ─────────────────────────────────────────────────────────────
-function Sparkline({ data, color = 'var(--primary)', height = 28 }: { data: number[]; color?: string; height?: number }) {
-  const max = Math.max(...data), min = Math.min(...data), range = max - min || 1
-  return (
-    <svg width="100%" height={height} viewBox={`0 0 ${data.length * 10} ${height}`} preserveAspectRatio="none" style={{ display: 'block' }}>
-      <polyline
-        fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-        points={data.map((v, i) => `${i * 10},${height - ((v - min) / range) * (height - 4) - 2}`).join(' ')}
-      />
-    </svg>
-  )
+// Router-side agent names (as they appear in ApiArtifact.agent_name) mapped
+// to the website's UI AgentId, for icon/color lookups on live artifacts.
+const ROUTER_NAME_TO_AGENT_ID: Record<string, AgentId> = {
+  CEO: 'ceo', PM: 'product', Product: 'product', Engineering: 'engineering',
+  HR: 'hr', Sales: 'sales', Marketing: 'marketing', Finance: 'finance',
 }
 
 // ─── Pulse Tab ─────────────────────────────────────────────────────────────
@@ -136,117 +148,75 @@ function LatestWorkPanel({ artifacts }: { artifacts: ApiArtifact[] | null }) {
   )
 }
 
-function PulseTab({ liveAudit, liveQueue, liveArtifacts }: { liveAudit: any[] | null; liveQueue: ApiQueueItem[] | null; liveArtifacts: ApiArtifact[] | null }) {
-  const kpis = liveQueue !== null
-    ? [
-      ...COMPANY_KPIS.slice(0, 3),
-      {
-        label: 'Manager Queue',
-        value: liveQueue.length,
-        delta: undefined,
-        trend: 'flat' as const,
-        description: 'Live queued router items for MANAGER',
-      },
-    ]
-    : COMPANY_KPIS.slice(0, 4)
+function PulseTab({ liveAudit, liveQueue, liveArtifacts }: { liveAudit: ApiAuditEvent[] | null; liveQueue: ApiQueueItem[] | null; liveArtifacts: ApiArtifact[] | null }) {
+  const stats = auditToAgentStats(liveAudit)
+  const totalMessages = Object.values(stats).reduce((sum, s) => sum + s.messages, 0)
+  const maxMessages = Math.max(1, ...Object.values(stats).map(s => s.messages))
+
+  const kpis = [
+    { label: 'Router Events', value: liveAudit?.length ?? 0, description: 'Total audit events recorded' },
+    { label: 'Messages Routed', value: totalMessages, description: 'Inter-agent messages sent this session' },
+    { label: 'Artifacts Produced', value: liveArtifacts?.length ?? 0, description: 'Completed deliverables written by agents' },
+    { label: 'Manager Queue', value: liveQueue?.length ?? 0, description: 'Live queued router items for MANAGER' },
+  ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
 
-      {/* KPI grid */}
+      {/* KPI grid — real counts derived from the router's own audit log/queue/artifacts, no fabricated deltas or trend lines */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-        {kpis.map((kpi, i) => {
-          const positive = kpi.trend === 'up'
-          const spark = [60, 65, 62, 70, 75, 80, 85, 87].map((v, j) => v + i * 3 + j)
-          return (
-            <motion.div
-              key={kpi.label}
-              className="kpi fade-up"
-              style={{ padding: '20px 22px', animationDelay: `${i * 50}ms` }}
-            >
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
-                <span className="kpi-label">{kpi.label}</span>
-                <span style={{
-                  fontSize: 10, padding: '2px 7px', borderRadius: 20, fontWeight: 600,
-                  color: positive ? 'var(--green)' : 'var(--red)',
-                  background: positive ? 'rgba(52,211,153,0.10)' : 'rgba(248,113,113,0.10)',
-                  border: `1px solid ${positive ? 'rgba(52,211,153,0.22)' : 'rgba(248,113,113,0.22)'}`,
-                }}>
-                  {kpi.delta != null ? (kpi.delta > 0 ? '+' : '') + kpi.delta + '%' : '—'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 }}>
-                <div className="kpi-value" style={{ fontSize: 28 }}>{kpi.value}</div>
-                <div style={{ width: 70, flexShrink: 0, opacity: 0.85 }}>
-                  <Sparkline data={spark} color={positive ? 'var(--green)' : 'var(--red)'} height={30} />
-                </div>
-              </div>
-            </motion.div>
-          )
-        })}
+        {kpis.map((kpi, i) => (
+          <motion.div
+            key={kpi.label}
+            className="kpi fade-up"
+            style={{ padding: '20px 22px', animationDelay: `${i * 50}ms` }}
+          >
+            <div style={{ marginBottom: 14 }}>
+              <span className="kpi-label">{kpi.label}</span>
+            </div>
+            <div className="kpi-value" style={{ fontSize: 28 }}>{kpi.value}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>{kpi.description}</div>
+          </motion.div>
+        ))}
       </div>
 
       <LatestWorkPanel artifacts={liveArtifacts} />
 
-      {/* Revenue chart full width */}
-      <div className="card" style={{ padding: 26 }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 18 }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>Revenue forecast</div>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>Mock/demo business data · router does not produce revenue metrics yet</div>
-          </div>
-          <div style={{ display: 'flex', gap: 16, fontSize: 11.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ width: 10, height: 2, background: 'var(--primary)', borderRadius: 1, display: 'inline-block' }} /> Actual
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ width: 10, borderTop: '1.5px dashed var(--primary-2)', display: 'inline-block' }} /> Projected
-            </span>
-          </div>
-        </div>
-        <ResponsiveContainer width="100%" height={240}>
-          <AreaChart data={REVENUE_FORECAST} margin={{ top: 6, right: 8, bottom: 0, left: -12 }}>
-            <defs>
-              <linearGradient id="revG" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%"   stopColor="var(--primary)" stopOpacity={0.3} />
-                <stop offset="100%" stopColor="var(--primary)" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid vertical={false} />
-            <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
-            <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11 }} tickFormatter={v => `$${(v/1000).toFixed(0)}K`} />
-            <Tooltip formatter={(v: number) => `$${(v/1000).toFixed(0)}K`} />
-            <Area type="monotone" dataKey="actual"   stroke="var(--primary)"   strokeWidth={2}   fill="url(#revG)" />
-            <Area type="monotone" dataKey="forecast" stroke="var(--primary-2)" strokeWidth={1.5} fill="none" strokeDasharray="4 3" />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      <NotAvailablePanel
+        title="Revenue forecast"
+        subtitle="Business/financial metrics"
+        reason="Not available — the router only knows message lifecycle events. Revenue requires a Finance agent emitting structured metric events, which this repo does not implement."
+      />
 
-      {/* Agent load + Activity */}
+      {/* Agent activity + Activity feed */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 22 }}>
-        {/* Agent load */}
+        {/* Agent activity — real message counts from the audit log */}
         <div className="card" style={{ padding: 26 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>Agent load</div>
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>Capacity utilization this week</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)' }}>Agent activity</div>
+              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 3 }}>Messages sent/received this session (router audit log)</div>
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {AGENT_LOAD.map(a => (
-              <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <div className="agent-glyph" style={{ width: 28, height: 28, borderRadius: 7, background: `${a.color}1c`, border: `1px solid ${a.color}33` }}>
-                  <span style={{ color: a.color }}>{AGENT_ICONS[a.agentId]}</span>
+            {AGENTS.map(agent => {
+              const s = stats[agent.id]
+              const pct = Math.round((s.messages / maxMessages) * 100)
+              return (
+                <div key={agent.id} style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <div className="agent-glyph" style={{ width: 28, height: 28, borderRadius: 7, background: `${agent.color}1c`, border: `1px solid ${agent.color}33` }}>
+                    <span style={{ color: agent.color }}>{AGENT_ICONS[agent.id]}</span>
+                  </div>
+                  <span style={{ width: 90, fontSize: 12.5, color: 'var(--text-1)', fontWeight: 500 }}>{agent.name}</span>
+                  <div className="progress" style={{ flex: 1, height: 5 }}>
+                    <div className="progress-fill" style={{ width: `${pct}%`, background: agent.color }} />
+                  </div>
+                  <span style={{ width: 40, textAlign: 'right', fontSize: 11.5, fontFamily: 'var(--font-mono)', color: 'var(--text-2)' }}>
+                    {s.messages}
+                  </span>
                 </div>
-                <span style={{ width: 90, fontSize: 12.5, color: 'var(--text-1)', fontWeight: 500 }}>{a.name}</span>
-                <div className="progress" style={{ flex: 1, height: 5 }}>
-                  <div className="progress-fill" style={{ width: `${a.value}%`, background: a.color }} />
-                </div>
-                <span style={{ width: 40, textAlign: 'right', fontSize: 11.5, fontFamily: 'var(--font-mono)', color: a.value >= 85 ? 'var(--amber)' : 'var(--text-2)' }}>
-                  {a.value}%
-                </span>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
 
@@ -294,91 +264,84 @@ function PulseTab({ liveAudit, liveQueue, liveArtifacts }: { liveAudit: any[] | 
 }
 
 // ─── Distribution Tab ──────────────────────────────────────────────────────
-function DistributionTab() {
-  const totalLoad = AGENT_LOAD.reduce((s, a) => s + a.value, 0)
+function DistributionTab({ liveAudit }: { liveAudit: ApiAuditEvent[] | null }) {
+  const stats = auditToAgentStats(liveAudit)
+  const flow = auditToMessageFlow(liveAudit)
+  const totalMessages = Object.values(stats).reduce((s, a) => s + a.messages, 0)
+  const agentPieData = AGENTS.map(a => ({ ...a, messages: stats[a.id].messages }))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
 
-        {/* Workload donut */}
+        {/* Workload donut — real message-share per agent, from the router's audit log */}
         <div className="card" style={{ padding: 22 }}>
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Workload distribution</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Capacity allocated across agents this week</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Share of messages routed this session, by agent</div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, alignItems: 'center' }}>
-            <div style={{ position: 'relative' }}>
-              <ResponsiveContainer width="100%" height={200}>
-                <PieChart>
-                  <Pie data={AGENT_LOAD} dataKey="value" nameKey="name" innerRadius={58} outerRadius={86} stroke="var(--card)" strokeWidth={2} paddingAngle={1}>
-                    {AGENT_LOAD.map((a, i) => <Cell key={i} fill={a.color} />)}
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-                <div className="font-display" style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-1)', letterSpacing: '-0.02em' }}>{totalLoad}</div>
-                <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>total %</div>
+          {totalMessages === 0 ? (
+            <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+              No messages routed yet.
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, alignItems: 'center' }}>
+              <div style={{ position: 'relative' }}>
+                <ResponsiveContainer width="100%" height={200}>
+                  <PieChart>
+                    <Pie data={agentPieData} dataKey="messages" nameKey="name" innerRadius={58} outerRadius={86} stroke="var(--card)" strokeWidth={2} paddingAngle={1}>
+                      {agentPieData.map((a, i) => <Cell key={i} fill={a.color} />)}
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+                  <div className="font-display" style={{ fontSize: 26, fontWeight: 700, color: 'var(--text-1)', letterSpacing: '-0.02em' }}>{totalMessages}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>messages</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                {AGENTS.map(a => (
+                  <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 2, background: a.color, flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontSize: 12, color: 'var(--text-2)' }}>{a.name}</span>
+                    <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
+                      {totalMessages > 0 ? Math.round((stats[a.id].messages / totalMessages) * 100) : 0}%
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-              {AGENT_LOAD.map(a => (
-                <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: 2, background: a.color, flexShrink: 0 }} />
-                  <span style={{ flex: 1, fontSize: 12, color: 'var(--text-2)' }}>{a.name}</span>
-                  <span style={{ fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--text-3)' }}>
-                    {Math.round((a.value / totalLoad) * 100)}%
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
+          )}
         </div>
 
-        {/* Spend distribution */}
-        <div className="card" style={{ padding: 22 }}>
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Spend distribution</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Quarterly spend vs allocation by department</div>
-          </div>
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={BUDGET_ALLOCATIONS} layout="vertical" margin={{ top: 4, right: 12, bottom: 0, left: 0 }} barSize={12}>
-              <CartesianGrid horizontal={false} />
-              <XAxis type="number" tickFormatter={v => `$${v}K`} axisLine={false} tickLine={false} tick={{ fontSize: 10 }} />
-              <YAxis type="category" dataKey="department" axisLine={false} tickLine={false} width={80} tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(v: number) => `$${v}K`} />
-              <Bar dataKey="allocated" name="Allocated" fill="rgba(255,255,255,0.06)" radius={[0, 3, 3, 0]} />
-              <Bar dataKey="spent"     name="Spent"     radius={[0, 3, 3, 0]}>
-                {BUDGET_ALLOCATIONS.map((b, i) => (
-                  <Cell key={i} fill={b.spent / b.allocated > 0.9 ? 'var(--amber)' : AGENT_COLOR[b.agentId] ?? 'var(--primary)'} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+        <NotAvailablePanel
+          title="Spend distribution"
+          subtitle="Budget vs. actual spend by department"
+          reason="Not available — no Finance agent worker is implemented in this repo, so the router has no budget/spend data to show."
+        />
       </div>
 
-      {/* Inter-agent message flow matrix */}
+      {/* Inter-agent message flow matrix — real, from message_submitted audit events */}
       <div className="card" style={{ padding: 22 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Inter-agent message flow</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Volume of messages between agents · last 7 days</div>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Volume of messages between agents this session</div>
           </div>
           <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-            {MESSAGE_FLOW.reduce((s, m) => s + m.count, 0)} messages
+            {flow.reduce((s, m) => s + m.count, 0)} messages
           </span>
         </div>
-        <MessageMatrix />
+        <MessageMatrix flow={flow} />
       </div>
     </div>
   )
 }
 
-function MessageMatrix() {
+function MessageMatrix({ flow }: { flow: { from: AgentId; to: AgentId; count: number }[] }) {
   const ids: AgentId[] = ['ceo', 'product', 'engineering', 'hr', 'sales', 'marketing', 'finance']
-  const max = Math.max(...MESSAGE_FLOW.map(m => m.count))
-  const getCount = (from: AgentId, to: AgentId) => MESSAGE_FLOW.find(x => x.from === from && x.to === to)?.count ?? 0
+  const max = Math.max(1, ...flow.map(m => m.count))
+  const getCount = (from: AgentId, to: AgentId) => flow.find(x => x.from === from && x.to === to)?.count ?? 0
   const names: Record<AgentId, string> = { ceo: 'CEO', product: 'Prod', engineering: 'Eng', hr: 'HR', sales: 'Sales', marketing: 'Mkt', finance: 'Fin' }
 
   return (
@@ -418,93 +381,57 @@ function MessageMatrix() {
 }
 
 // ─── Pipeline Tab ──────────────────────────────────────────────────────────
-function PipelineTab({ liveAudit }: { liveAudit: ApiAuditEvent[] | null }) {
+function PipelineTab({ liveAudit, liveArtifacts }: { liveAudit: ApiAuditEvent[] | null; liveArtifacts: ApiArtifact[] | null }) {
   const liveThroughput = auditToThroughput(liveAudit, 7)
   const throughputData = liveThroughput.length ? liveThroughput : TASK_THROUGHPUT
   const throughputLive = liveThroughput.length > 0
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {/* Workflows */}
+      {/* Recent completed work — real, from GET /artifacts across all agents */}
       <div className="card" style={{ padding: 22 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <div>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Active workflows</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Recent completed work</div>
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>
-              {KANOSEI_WORKFLOWS.length} workflows · {KANOSEI_WORKFLOWS.reduce((s, w) => s + w.stages.length, 0)} stages
+              {liveArtifacts?.length ?? 0} artifacts this session
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {KANOSEI_WORKFLOWS.map(w => {
-            const ownerColor = AGENT_COLOR[w.owner]
-            const ownerIcon  = AGENT_ICONS[w.owner]
-            return (
-              <div key={w.id} style={{ padding: '14px 16px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div className="agent-glyph" style={{ width: 26, height: 26, borderRadius: 7, background: `${ownerColor}1c`, border: `1px solid ${ownerColor}40` }}>
-                      <span style={{ color: ownerColor }}>{ownerIcon}</span>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>{w.name}</div>
-                      <div style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{w.progress}% complete</div>
-                    </div>
-                  </div>
-                  <span className="badge status-active">{w.status}</span>
-                </div>
-                <div style={{ display: 'flex', gap: 3 }}>
-                  {w.stages.map((s, i) => {
-                    const ag = AGENT_COLOR[s.agent]
-                    const isDone   = s.status === 'done'
-                    const isActive = s.status === 'active'
-                    return (
-                      <div key={i} style={{
-                        flex: 1, minWidth: 0, padding: '7px 8px',
-                        background: isActive ? `${ag}14` : isDone ? 'rgba(52,211,153,0.06)' : 'transparent',
-                        border: '1px solid', borderColor: isActive ? `${ag}50` : isDone ? 'rgba(52,211,153,0.22)' : 'var(--border)',
-                        borderRadius: 5,
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
-                          {isDone && <CheckCircle2 size={9} color="var(--green)" strokeWidth={2.5} />}
-                          {isActive && <span style={{ width: 5, height: 5, borderRadius: '50%', background: ag }} />}
-                          {!isDone && !isActive && <Circle size={5} style={{ color: 'var(--text-4)' }} />}
-                        </div>
-                        <div style={{ fontSize: 11, color: isDone || isActive ? 'var(--text-1)' : 'var(--text-3)', lineHeight: 1.3, fontWeight: isActive ? 500 : 400 }}>{s.name}</div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 18 }}>
-        {/* Sales pipeline funnel */}
-        <div className="card" style={{ padding: 22 }}>
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-1)' }}>Sales pipeline</div>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2 }}>Deals at each stage · managed by Sales agent</div>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {PIPELINE.map((p, i) => {
-              const widthPct = 100 - i * 15
+        {liveArtifacts && liveArtifacts.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {liveArtifacts.slice(0, 8).map(a => {
+              const agentId = ROUTER_NAME_TO_AGENT_ID[a.agent_name]
+              const color = agentId ? AGENT_COLOR[agentId] : 'var(--text-3)'
+              const icon = agentId ? AGENT_ICONS[agentId] : <FileText size={13} />
               return (
-                <div key={p.stage} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ width: 88, fontSize: 11.5, color: 'var(--text-2)' }}>{p.stage}</div>
-                  <div style={{ flex: 1, height: 30, background: 'rgba(255,255,255,0.02)', borderRadius: 5, overflow: 'hidden' }}>
-                    <div style={{ width: `${widthPct}%`, height: '100%', background: `${p.color}26`, border: `1px solid ${p.color}55`, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 10px' }}>
-                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-1)' }}>{p.count}</span>
-                      {p.value > 0 && <span style={{ fontSize: 10.5, fontFamily: 'var(--font-mono)', color: 'var(--text-2)' }}>${p.value}K</span>}
+                <div key={a.artifact_id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <div className="agent-glyph" style={{ width: 28, height: 28, borderRadius: 7, background: `${color}1c`, border: `1px solid ${color}40`, flexShrink: 0 }}>
+                    <span style={{ color }}>{icon}</span>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-1)' }}>{a.title}</div>
+                    <div style={{ fontSize: 10.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>
+                      {a.agent_name} · {a.artifact_type} · {new Date(a.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   </div>
                 </div>
               )
             })}
           </div>
-        </div>
+        ) : (
+          <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+            No completed work yet. Complete onboarding or run the initiation workflow.
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 18 }}>
+        <NotAvailablePanel
+          title="Sales pipeline"
+          subtitle="Deals at each stage"
+          reason="Not available — no Sales agent worker is implemented in this repo, so there is no pipeline data to show."
+        />
 
         {/* Task throughput */}
         <div className="card" style={{ padding: 22 }}>
@@ -536,15 +463,24 @@ function PerformanceTab({ liveAudit }: { liveAudit: ApiAuditEvent[] | null }) {
   const liveThroughput = auditToThroughput(liveAudit, 7)
   const completionTrend = liveThroughput.length ? liveThroughput : TASK_THROUGHPUT
   const completionTrendLive = liveThroughput.length > 0
-  const perf = AGENTS.map(a => ({
-    id: a.id, name: a.name, role: a.role, color: a.color,
-    successRate: a.successRate,
-    completed:   a.completedTasks,
-    messages:    a.totalMessages,
-    activeTasks: a.activeTaskCount,
-  })).sort((a, b) => b.successRate - a.successRate)
+  const stats = auditToAgentStats(liveAudit)
+  // Real per-agent numbers from the router's own audit log (message_acked /
+  // message_nacked / message_submitted events) — replaces the fabricated
+  // successRate/completedTasks/totalMessages/activeTaskCount fields on the
+  // static mock-data.ts Agent records. successRate is null (rendered as
+  // "—") until an agent has at least one acked/nacked message.
+  const perf = AGENTS.map(a => {
+    const s: AgentStat = stats[a.id]
+    return {
+      id: a.id, name: a.name, role: a.role, color: a.color,
+      successRate: s.successRate,
+      completed: s.completed,
+      messages: s.messages,
+      pending: Math.max(0, s.messages - s.completed - s.failed),
+    }
+  }).sort((a, b) => (b.successRate ?? -1) - (a.successRate ?? -1))
 
-  const radialData = perf.map(p => ({ name: p.name, value: p.successRate, fill: p.color }))
+  const radialData = perf.map(p => ({ name: p.name, value: p.successRate ?? 0, fill: p.color }))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -577,15 +513,17 @@ function PerformanceTab({ liveAudit }: { liveAudit: ApiAuditEvent[] | null }) {
                 </div>
                 <div style={{ display: 'flex', gap: 14, fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', marginTop: 3 }}>
                   <span>{p.completed} done</span>
-                  <span>{p.activeTasks} active</span>
+                  <span>{p.pending} pending</span>
                   <span>{p.messages} msgs</span>
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div className="font-display" style={{ fontSize: 20, fontWeight: 700, color: p.color, letterSpacing: '-0.02em' }}>
-                  {p.successRate}<span style={{ fontSize: 12, color: 'var(--text-3)' }}>%</span>
+                  {p.successRate ?? '—'}{p.successRate != null && <span style={{ fontSize: 12, color: 'var(--text-3)' }}>%</span>}
                 </div>
-                <div style={{ fontSize: 9.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>success</div>
+                <div style={{ fontSize: 9.5, color: 'var(--text-3)', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+                  {p.successRate != null ? 'success' : 'no data yet'}
+                </div>
               </div>
             </div>
           ))}
@@ -696,8 +634,8 @@ export default function DashboardPage() {
           transition={{ duration: 0.2 }}
         >
           {tab === 'pulse'        && <PulseTab liveAudit={audit} liveQueue={managerQueue} liveArtifacts={artifacts} />}
-          {tab === 'distribution' && <DistributionTab />}
-          {tab === 'pipeline'     && <PipelineTab liveAudit={audit} />}
+          {tab === 'distribution' && <DistributionTab liveAudit={audit} />}
+          {tab === 'pipeline'     && <PipelineTab liveAudit={audit} liveArtifacts={artifacts} />}
           {tab === 'performance'  && <PerformanceTab liveAudit={audit} />}
         </motion.div>
       </AnimatePresence>

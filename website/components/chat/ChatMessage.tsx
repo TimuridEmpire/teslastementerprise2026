@@ -112,7 +112,12 @@ export default function ChatMessage({ msg }: { msg: ChatMsg }) {
           </span>
         </div>
         <div className="chat-bubble-agent px-4 py-2.5 text-[13.5px] leading-relaxed" style={{ color: 'var(--text-1)' }}>
-          {msg.loading ? <TypingDots /> : msg.text}
+          {msg.loading && !msg.text ? <TypingDots /> : msg.text}
+          {msg.loading && msg.text && (
+            <span className="inline-block ml-1.5 align-middle">
+              <TypingDots />
+            </span>
+          )}
         </div>
       </div>
     </motion.div>

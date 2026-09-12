@@ -68,8 +68,10 @@ function extractArtifactBody(content: string): string {
 async function waitForArtifactReply(
   recipient: string,
   messageId: string,
+  onTick?: (elapsedMs: number) => void,
 ): Promise<{ title: string; body: string } | null> {
-  const deadline = Date.now() + ARTIFACT_POLL_TIMEOUT_MS
+  const start = Date.now()
+  const deadline = start + ARTIFACT_POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     try {
       const artifacts = await api.artifacts.list(recipient, 5)
@@ -82,6 +84,7 @@ async function waitForArtifactReply(
       // Transient fetch error — keep polling until the deadline instead of
       // giving up on the first hiccup.
     }
+    onTick?.(Date.now() - start)
     await new Promise(resolve => setTimeout(resolve, ARTIFACT_POLL_INTERVAL_MS))
   }
   return null
@@ -178,7 +181,18 @@ export default function CommandChat() {
     // take anywhere from under a second to 30+ seconds.
     setSending(false)
 
-    const reply = await waitForArtifactReply(recipient, messageId)
+    const reply = await waitForArtifactReply(recipient, messageId, elapsedMs => {
+      // Without this, the bubble sits on bare typing dots for however long
+      // the agent takes (CEO makes real sequential local-model calls and can
+      // take 20-40s) with zero feedback — which reads as "stuck," not "slow."
+      const seconds = Math.round(elapsedMs / 1000)
+      if (seconds < 5) return
+      setMessages(prev => prev.map(m =>
+        m.id === loadingId
+          ? { ...m, text: `Still waiting on ${agentName} (${seconds}s)… local-model calls can take 20-40s.` }
+          : m
+      ))
+    })
     setMessages(prev => prev.map(m =>
       m.id === loadingId
         ? {
