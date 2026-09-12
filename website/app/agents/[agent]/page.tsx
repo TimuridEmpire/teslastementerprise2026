@@ -5,15 +5,15 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Crown, Package, Code2, Users, TrendingUp, Megaphone,
-  DollarSign, CheckCircle2, Clock, AlertCircle, XCircle,
+  DollarSign, CheckCircle2, AlertCircle,
   Send, ChevronRight, Zap, Shield, Activity, BarChart3,
   MessageSquare, FileText, Target, Circle,
 } from 'lucide-react'
-import { AGENTS, TASKS, MESSAGES } from '@/lib/mock-data'
-import { useArtifacts, useQueue } from '@/lib/hooks'
-import type { AgentId, TaskStatus } from '@/lib/types'
+import { AGENTS, MESSAGES } from '@/lib/mock-data'
+import { useArtifacts, useQueue, useAudit } from '@/lib/hooks'
+import { auditToAgentStats, auditToThroughput } from '@/lib/live-metrics'
+import type { AgentId } from '@/lib/types'
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts'
-import WorkerAgentsDropdown, { type WorkerAgent } from '@/components/agents/WorkerAgentsDropdown'
 import { api } from '@/lib/api'
 
 // Agent metadata
@@ -33,53 +33,12 @@ const AGENT_COLORS: Record<AgentId, string> = {
   finance:     'var(--agent-finance)',
 }
 
-// Mock worker agents per department
-const WORKER_MAP: Record<AgentId, WorkerAgent[]> = {
-  ceo: [
-    { id: 'ceo-w1', name: 'Strategy Analyst',   role: 'Market analysis & reports', status: 'active', taskCount: 3 },
-    { id: 'ceo-w2', name: 'Board Liaison',       role: 'Investor communications',  status: 'idle',   taskCount: 0 },
-  ],
-  product: [
-    { id: 'prod-w1', name: 'UX Researcher',      role: 'User interviews & studies', status: 'busy',   taskCount: 5 },
-    { id: 'prod-w2', name: 'Data Analyst',       role: 'Metrics & A/B testing',     status: 'active', taskCount: 2 },
-    { id: 'prod-w3', name: 'Backlog Curator',    role: 'Ticket management',         status: 'idle',   taskCount: 1 },
-  ],
-  engineering: [
-    { id: 'eng-w1', name: 'Backend Worker',      role: 'API & database services',  status: 'busy',   taskCount: 6 },
-    { id: 'eng-w2', name: 'Frontend Worker',     role: 'UI components & routing',  status: 'active', taskCount: 4 },
-    { id: 'eng-w3', name: 'DevOps Agent',        role: 'CI/CD & infrastructure',   status: 'active', taskCount: 2 },
-    { id: 'eng-w4', name: 'QA Agent',            role: 'Testing & bug tracking',   status: 'idle',   taskCount: 1 },
-  ],
-  hr: [
-    { id: 'hr-w1', name: 'Recruiter Agent',      role: 'Candidate sourcing',       status: 'active', taskCount: 7 },
-    { id: 'hr-w2', name: 'Onboarding Agent',     role: 'New hire process',         status: 'idle',   taskCount: 0 },
-  ],
-  sales: [
-    { id: 'sales-w1', name: 'Lead Qualifier',    role: 'Inbound lead processing',  status: 'active', taskCount: 11 },
-    { id: 'sales-w2', name: 'Account Manager',   role: 'Existing client relations',status: 'busy',   taskCount: 4 },
-    { id: 'sales-w3', name: 'Proposal Writer',   role: 'RFP responses',            status: 'idle',   taskCount: 2 },
-  ],
-  marketing: [
-    { id: 'mkt-w1', name: 'Content Agent',       role: 'Blog & social content',    status: 'busy',   taskCount: 8 },
-    { id: 'mkt-w2', name: 'Campaign Manager',    role: 'Paid & email campaigns',   status: 'active', taskCount: 3 },
-  ],
-  finance: [
-    { id: 'fin-w1', name: 'Expense Tracker',     role: 'Invoice & receipt logging',status: 'active', taskCount: 5 },
-    { id: 'fin-w2', name: 'Forecast Agent',      role: 'Revenue modeling',         status: 'idle',   taskCount: 1 },
-  ],
-}
-
-const TASK_STATUS_CONFIG: Record<TaskStatus, { label: string; icon: React.ReactNode }> = {
-  done:        { label: 'Done',        icon: <CheckCircle2 size={11} /> },
-  in_progress: { label: 'In Progress', icon: <Activity size={11} /> },
-  pending:     { label: 'Pending',     icon: <Clock size={11} /> },
-  blocked:     { label: 'Blocked',     icon: <AlertCircle size={11} /> },
-  failed:      { label: 'Failed',      icon: <XCircle size={11} /> },
-}
-
-const STATUS_DOT: Record<string, string> = {
-  active: 'var(--green)', busy: 'var(--amber)', idle: 'var(--sky)', error: 'var(--red)', offline: 'var(--text-3)',
-}
+// Matches README "Current implemented runtime workers" vs "Registered but
+// not implemented" — Sales and Finance are registered with the router so
+// they can be selected and messaged, but run_agents.py has no worker
+// process for them, so nothing ever consumes what's sent. Shown as an
+// explicit banner below rather than left for the numbers to imply.
+const LIVE_WORKER_AGENT_IDS = new Set<AgentId>(['ceo', 'product', 'engineering', 'hr', 'marketing'])
 
 const ROUTER_AGENT_BY_UI_ID: Record<string, string> = {
   ceo: 'CEO',
@@ -101,20 +60,13 @@ const ROUTER_AGENT_KEYS: Record<string, string> = {
   Finance: process.env.NEXT_PUBLIC_FINANCE_API_KEY ?? '',
 }
 
-const weeklyData = [
-  { day: 'Mon', tasks: 3, msgs: 12 }, { day: 'Tue', tasks: 5, msgs: 18 },
-  { day: 'Wed', tasks: 2, msgs: 9 },  { day: 'Thu', tasks: 6, msgs: 21 },
-  { day: 'Fri', tasks: 4, msgs: 15 }, { day: 'Sat', tasks: 1, msgs: 4 },
-  { day: 'Sun', tasks: 2, msgs: 6 },
-]
-
 export default function AgentPage({ params }: { params: { agent: string } }) {
   const { agent: agentId } = params
   const agent = AGENTS.find(a => a.id === agentId)
   if (!agent) notFound()
 
-  const color   = AGENT_COLORS[agent.id as AgentId]
-  const workers = WORKER_MAP[agent.id as AgentId] ?? []
+  const color = AGENT_COLORS[agent.id as AgentId]
+  const isLiveWorker = LIVE_WORKER_AGENT_IDS.has(agent.id as AgentId)
   const routerRecipient = ROUTER_AGENT_BY_UI_ID[agent.id] ?? agent.name
   const routerApiKey = ROUTER_AGENT_KEYS[routerRecipient] ?? ''
 
@@ -126,10 +78,24 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
   // Live queue; skips fetching when this agent has no configured key.
   const { data: queue, enabled: queueEnabled, error: queueError } = useQueue(routerRecipient, routerApiKey)
   const { data: artifacts, error: artifactError } = useArtifacts(routerRecipient, 10)
+  const { data: audit } = useAudit(200)
   const hasRouterQueue = queue !== null
   const latestArtifact = artifacts?.[0] ?? null
 
-  const agentTasks    = TASKS.filter(t => t.assignedTo === agent.id)
+  // Real per-agent numbers from the router's own audit log — replaces the
+  // fabricated Tasks Done / Success / Messages / Resource Usage /
+  // Performance Profile / Weekly Activity that used to come from
+  // mock-data.ts's static AGENTS/TASKS arrays regardless of what this
+  // agent (or its router worker, if one exists) had actually done.
+  const stats = auditToAgentStats(audit)[agent.id as AgentId]
+  const agentThroughput = auditToThroughput(
+    (audit ?? []).filter(e => {
+      const d = e.details as Record<string, unknown> | undefined
+      return d?.sender === routerRecipient || d?.recipient === routerRecipient
+    }),
+    7,
+  )
+
   const agentMessages = hasRouterQueue
     ? queue.map(item => ({
       id: item.envelope.id,
@@ -145,18 +111,15 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
     : MESSAGES.filter(m => m.sender === agent.id || m.recipient === agent.id)
 
   const radarData = [
-    { subject: 'Execution',   value: agent.successRate },
-    { subject: 'Throughput',  value: Math.min(agent.activeTaskCount * 12, 100) },
-    { subject: 'Trust',       value: agent.trustLevel },
-    { subject: 'Messages',    value: Math.min(agent.totalMessages / 4, 100) },
-    { subject: 'Efficiency',  value: 100 - agent.resourceUsage },
+    { subject: 'Success',  value: stats.successRate ?? 0 },
+    { subject: 'Messages', value: Math.min(stats.messages * 5, 100) },
+    { subject: 'Completed', value: Math.min(stats.completed * 10, 100) },
   ]
 
   const statusCounts = {
-    done:        agentTasks.filter(t => t.status === 'done').length,
-    in_progress: agentTasks.filter(t => t.status === 'in_progress').length,
-    blocked:     agentTasks.filter(t => t.status === 'blocked').length,
-    pending:     agentTasks.filter(t => t.status === 'pending').length,
+    completed: stats.completed,
+    pending:   hasRouterQueue ? queue.length : 0,
+    failed:    stats.failed,
   }
 
   async function handleSend() {
@@ -210,13 +173,13 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
             <div className="text-[12px] leading-relaxed max-w-xl" style={{ color: 'var(--text-3)' }}>{agent.specialization}</div>
           </div>
 
-          {/* KPIs */}
+          {/* KPIs — real, from the router's own audit log (message_submitted/acked/nacked) */}
           <div className="flex gap-3 flex-wrap">
             {[
-              { label: 'Tasks Done',   value: agent.completedTasks,   icon: <CheckCircle2 size={11} /> },
-              { label: 'Success',      value: `${agent.successRate}%`, icon: <Target size={11} /> },
-              { label: 'Active',       value: agent.activeTaskCount,   icon: <Activity size={11} /> },
-              { label: 'Messages',     value: agent.totalMessages,     icon: <MessageSquare size={11} /> },
+              { label: 'Completed', value: stats.completed, icon: <CheckCircle2 size={11} /> },
+              { label: 'Success',   value: stats.successRate != null ? `${stats.successRate}%` : '—', icon: <Target size={11} /> },
+              { label: 'Pending',   value: hasRouterQueue ? queue.length : '—', icon: <Activity size={11} /> },
+              { label: 'Messages',  value: stats.messages, icon: <MessageSquare size={11} /> },
             ].map(k => (
               <div key={k.label} className="card-inner px-4 py-3 text-center">
                 <div className="flex justify-center mb-0.5" style={{ color }}>{k.icon}</div>
@@ -226,24 +189,24 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
             ))}
           </div>
         </div>
+      </motion.div>
 
-        {/* Resource bar */}
-        <div className="relative mt-5">
-          <div className="flex justify-between text-[11px] mb-1.5" style={{ color: 'var(--text-3)' }}>
-            <span>Resource Usage</span>
-            <span style={{ color: agent.resourceUsage > 85 ? 'var(--amber)' : color }}>{agent.resourceUsage}%</span>
-          </div>
-          <div className="progress">
-            <motion.div
-              className="progress-fill"
-              initial={{ width: 0 }}
-              animate={{ width: `${agent.resourceUsage}%` }}
-              transition={{ duration: 0.8, ease: 'easeOut' }}
-              style={{ background: color }}
-            />
+      {/* No-live-worker banner — this agent is registered with the router
+          (so it can be messaged) but run_agents.py has no worker process
+          for it, so nothing ever consumes what's sent here. */}
+      {!isLiveWorker && (
+        <div
+          className="card p-4 flex items-start gap-3"
+          style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)' }}
+        >
+          <AlertCircle size={16} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 2 }} />
+          <div className="text-[12px] leading-relaxed" style={{ color: 'var(--text-2)' }}>
+            <strong style={{ color: 'var(--amber)' }}>No live worker for {agent.name}.</strong> This department is
+            registered with the router, so messages sent below will queue — but no process is running to pick them
+            up, so they'll stay queued rather than produce a real response or artifact.
           </div>
         </div>
-      </motion.div>
+      )}
 
       {/* Main grid */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -252,15 +215,16 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }}
           className="xl:col-span-2 space-y-5">
 
-          {/* Worker agents dropdown */}
-          <WorkerAgentsDropdown workers={workers} agentColor={color} />
-
-          {/* Task status summary */}
-          <div className="grid grid-cols-4 gap-3">
-            {(Object.entries(statusCounts) as [TaskStatus, number][]).map(([status, count]) => (
-              <div key={status} className="card p-3 text-center">
-                <div className="font-display text-xl font-bold" style={{ color: 'var(--text-1)' }}>{count}</div>
-                <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-3)' }}>{TASK_STATUS_CONFIG[status].label}</div>
+          {/* Message status summary — real, from the router's audit log + live queue */}
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { key: 'completed', label: 'Completed', value: statusCounts.completed },
+              { key: 'pending',   label: 'Pending',   value: statusCounts.pending },
+              { key: 'failed',    label: 'Failed',    value: statusCounts.failed },
+            ].map(s => (
+              <div key={s.key} className="card p-3 text-center">
+                <div className="font-display text-xl font-bold" style={{ color: 'var(--text-1)' }}>{s.value}</div>
+                <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-3)' }}>{s.label}</div>
               </div>
             ))}
           </div>
@@ -316,63 +280,32 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
             </div>
           )}
 
-          {/* Task list */}
+          {/* Activity — real, from the router's audit log for this agent specifically */}
           <div className="card p-5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Task List</h3>
-              <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{agentTasks.length} total</span>
+              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Activity</h3>
+              <span className="text-[10.5px] font-mono" style={{ color: agentThroughput.length ? 'var(--green)' : 'var(--text-3)' }}>
+                {agentThroughput.length ? 'live' : 'no activity yet'}
+              </span>
             </div>
-            <div className="space-y-2">
-              {agentTasks.length === 0 && (
-                <div className="text-center py-8 text-[12px]" style={{ color: 'var(--text-3)' }}>No tasks assigned</div>
-              )}
-              {agentTasks.map((task, i) => (
-                <motion.div key={task.id} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
-                  className="flex items-center gap-3 p-3 rounded-lg"
-                  style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)' }}>
-                  <div style={{ color: 'var(--text-3)', flexShrink: 0 }}>{TASK_STATUS_CONFIG[task.status].icon}</div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[12.5px] font-medium truncate" style={{ color: 'var(--text-1)' }}>{task.title}</span>
-                      <span className="badge flex-shrink-0" style={{ fontSize: 9, color, background: `${color}12`, borderColor: `${color}25` }}>
-                        {task.priority}
-                      </span>
-                    </div>
-                    {task.blockedReason && (
-                      <div className="text-[10px] flex items-center gap-1 mb-1" style={{ color: 'var(--amber)' }}>
-                        <AlertCircle size={9} />{task.blockedReason}
-                      </div>
-                    )}
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1 progress" style={{ height: 2 }}>
-                        <div className="progress-fill" style={{ width: `${task.progress}%`, background: color }} />
-                      </div>
-                      <span className="text-[10px] font-mono flex-shrink-0" style={{ color: 'var(--text-3)' }}>{task.progress}%</span>
-                      <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--text-3)' }}>
-                        {new Date(task.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                      </span>
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-
-          {/* Weekly chart */}
-          <div className="card p-5">
-            <h3 className="text-[13px] font-semibold mb-4" style={{ color: 'var(--text-1)' }}>Weekly Activity</h3>
-            <ResponsiveContainer width="100%" height={150}>
-              <BarChart data={weeklyData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }} barSize={8}>
-                <XAxis dataKey="day" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }}
-                  cursor={{ fill: 'rgba(255,255,255,0.03)' }}
-                />
-                <Bar dataKey="tasks" name="Tasks"    fill={color}              radius={[2,2,0,0]} opacity={0.85} />
-                <Bar dataKey="msgs"  name="Messages" fill="var(--indigo)"      radius={[2,2,0,0]} opacity={0.5} />
-              </BarChart>
-            </ResponsiveContainer>
+            {agentThroughput.length > 0 ? (
+              <ResponsiveContainer width="100%" height={150}>
+                <BarChart data={agentThroughput} margin={{ top: 4, right: 4, bottom: 0, left: -20 }} barSize={12}>
+                  <XAxis dataKey="day" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 11 }}
+                    cursor={{ fill: 'rgba(255,255,255,0.03)' }}
+                  />
+                  <Bar dataKey="completed" name="Completed" fill={color} radius={[2,2,0,0]} opacity={0.85} />
+                  <Bar dataKey="blocked"   name="Blocked"   fill="var(--red)" radius={[2,2,0,0]} opacity={0.7} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="text-center py-8 text-[12px]" style={{ color: 'var(--text-3)' }}>
+                No router audit events for {agent.name} yet.
+              </div>
+            )}
           </div>
 
           {/* Recent messages */}
