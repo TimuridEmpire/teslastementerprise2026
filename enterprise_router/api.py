@@ -14,6 +14,11 @@ except Exception:  # pragma: no cover - never let vector storage break the route
     semantic_search = None
     vector_store_stats = None
 
+try:  # pragma: no cover - build hosting is additive/optional
+    from .build_runner import get_manager as get_build_runner_manager
+except Exception:  # pragma: no cover - never let build hosting break the router API
+    get_build_runner_manager = None
+
 try:  # pragma: no cover - optional dependency
     from fastapi import Depends, FastAPI, Header, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
@@ -394,6 +399,31 @@ def create_app(settings: RouterSettings | None = None):
         if vector_store_stats is None:
             return {"enabled": False, "document_count": 0, "embedded_document_count": 0}
         return vector_store_stats()
+
+    @app.post("/builds/{artifact_id}/run")
+    def run_build(artifact_id: str, _: None = Depends(require_admin)) -> dict[str, Any]:
+        if get_build_runner_manager is None:
+            raise HTTPException(status_code=503, detail="Build hosting is unavailable.")
+        artifact = get_agent_artifact(artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Artifact not found.")
+        try:
+            return get_build_runner_manager().start(artifact_id, artifact.get("content", ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/builds/{artifact_id}/stop")
+    def stop_build(artifact_id: str, _: None = Depends(require_admin)) -> dict[str, Any]:
+        if get_build_runner_manager is None:
+            raise HTTPException(status_code=503, detail="Build hosting is unavailable.")
+        stopped = get_build_runner_manager().stop(artifact_id)
+        return {"stopped": stopped}
+
+    @app.get("/builds/running")
+    def running_builds(_: None = Depends(require_admin)) -> list[dict[str, Any]]:
+        if get_build_runner_manager is None:
+            return []
+        return get_build_runner_manager().status()
 
     @app.post("/agents/{agent_name}/issue-api-key")
     def issue_api_key(agent_name: str, _: None = Depends(require_admin)) -> dict[str, Any]:
