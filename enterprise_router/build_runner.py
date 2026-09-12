@@ -47,8 +47,20 @@ class BuildRunnerManager:
         self._lock = threading.Lock()
 
     def extract_files(self, content: str) -> dict[str, str]:
+        # A build's spec can itself quote a PRIOR artifact's full body as RAG
+        # background context (engineering_agent.py's _augment_spec_with_rag_context)
+        # -- and since that prior artifact may carry its own embedded
+        # "## Generated Source" section, the same heading can appear more than
+        # once in one artifact's content, with unrelated/truncated code inside
+        # the quoted section confusing a naive regex scan across the whole
+        # document. _artifact_body() always appends the artifact's OWN source
+        # last, after everything else, so anchor extraction to content after
+        # the LAST occurrence of the heading.
+        marker = "\n## Generated Source\n\n"
+        idx = content.rfind(marker)
+        section = content[idx + len(marker):] if idx != -1 else content
         files = {}
-        for filename, source in _SOURCE_BLOCK_RE.findall(content):
+        for filename, source in _SOURCE_BLOCK_RE.findall(section):
             files[filename.strip()] = source
         return files
 
