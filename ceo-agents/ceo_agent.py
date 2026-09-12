@@ -4,6 +4,7 @@
 
 # Import the logger from your custom logging file
 import datetime
+import os
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -47,10 +48,13 @@ class CeoAgent(ThreadSafeAgentMixin):
         self.children_nearby_detected = False
         self.enforce_local_audio_only = True
         self.disallow_external_audio_storage = True
-        # Ollama API endpoints for Mistral.
+        # Ollama API endpoints. Default model is "mistral" for backward
+        # compatibility; override with CEO_OLLAMA_MODEL if that model isn't
+        # pulled locally (calls otherwise fail with a 404 and CEO falls back
+        # to a "Strategic Link Error" string instead of a real answer).
         self.ollama_chat_url = "http://localhost:11434/api/chat"
         self.ollama_generate_url = "http://localhost:11434/api/generate"
-        self.model_name = "mistral"
+        self.model_name = os.environ.get("CEO_OLLAMA_MODEL", "mistral")
         self.chat_history: List[Dict[str, str]] = []
         self.metrics: Dict[str, Any] = {
             "tasks_per_agent": {},
@@ -339,7 +343,12 @@ class CeoAgent(ThreadSafeAgentMixin):
             "stream": False,
         }
         try:
-            response = requests.post(self.ollama_generate_url, json=payload, timeout=20)
+            # 30s, not 20s: on a memory-constrained machine, alternating between
+            # this generate call and the follow-up chat call (or an embedding
+            # call from the RAG hook) makes Ollama evict/reload models, and a
+            # cold reload alone can take 10-15s (see the identical fix for the
+            # vector store's embedding timeout).
+            response = requests.post(self.ollama_generate_url, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
@@ -719,7 +728,12 @@ class CeoAgent(ThreadSafeAgentMixin):
             return self.gather_information([str(x) for x in departments])
 
         if task == "CEO_CHAT":
-            user_message = str(payload.get("message") or payload.get("prompt") or "")
+            user_message = str(
+                payload.get("instruction")
+                or payload.get("message")
+                or payload.get("prompt")
+                or ""
+            )
             reply = self.chat_with_engine(user_message)
             return {
                 "ok": True,
@@ -733,7 +747,19 @@ class CeoAgent(ThreadSafeAgentMixin):
             departments = payload.get("departments") or payload.get("subordinate_agents") or []
             if not isinstance(departments, list):
                 departments = []
-            message = str(payload.get("message") or payload.get("prompt") or "")
+            # The website Chat page's plain-text broadcast and the onboarding
+            # flow both send this via POST /manager/interventions, which
+            # always puts the free text in payload["instruction"] (see
+            # EnterpriseRouter.submit_manager_intervention()) — not
+            # "message"/"prompt". Before this fallback, every CEO_REASONING_LOOP
+            # triggered from the website silently reasoned over an empty
+            # request instead of what was actually typed.
+            message = str(
+                payload.get("instruction")
+                or payload.get("message")
+                or payload.get("prompt")
+                or ""
+            )
             return self.execute_reasoning_loop(
                 message,
                 [str(x) for x in departments] if departments else None,

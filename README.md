@@ -1129,7 +1129,7 @@ CEO uses local Ollama endpoints:
 
 Default CEO model:
 
-- `mistral`
+- `mistral` — override with `CEO_OLLAMA_MODEL` if you haven't pulled `mistral` locally. Without it (or a running Ollama), CEO calls fail with a 404 and CEO falls back to a "Strategic Link Error" string in place of a real strategic decision/reply — the reasoning loop still completes and still delegates to PM, it just has nothing useful to say.
 
 Engineering uses an Ollama-compatible model through CrewAI when running in full mode.
 
@@ -1254,6 +1254,12 @@ JSONL path for local message-bus audit output.
 `ENTERPRISE_ARTIFACTS_DIR`
 
 Directory for markdown artifacts. Default is `<repo>/artifacts`.
+
+### CEO
+
+`CEO_OLLAMA_MODEL`
+
+Overrides the CEO agent's Ollama model (default `mistral`). Set this to a model you actually have pulled (`ollama list`) if `mistral` isn't installed.
 
 ### Engineering
 
