@@ -7,7 +7,7 @@ import {
   LayoutDashboard, MessageSquare, FlaskConical, GitBranch,
   Database, Eye, Crown, Package, Code2, Users, TrendingUp,
   Megaphone, DollarSign, ChevronDown, ChevronRight,
-  Menu, X, Circle, Settings, Zap, Activity,
+  Menu, X, Circle, Settings, Zap, Activity, Hammer,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AGENTS } from '@/lib/mock-data'
@@ -60,6 +60,7 @@ const CORE_NAV = [
 ]
 
 const OPS_NAV = [
+  { href: '/builds',        label: 'Builds',         icon: <Hammer size={14} /> },
   { href: '/resources',     label: 'Resources',     icon: <Database size={14} /> },
   { href: '/messages',      label: 'Messages',      icon: <MessageSquare size={14} /> },
   { href: '/lab',           label: 'Lab',           icon: <FlaskConical size={14} /> },

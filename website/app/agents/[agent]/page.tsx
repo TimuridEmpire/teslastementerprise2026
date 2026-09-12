@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { AGENTS, MESSAGES } from '@/lib/mock-data'
 import { useArtifacts, useQueue, useAudit } from '@/lib/hooks'
-import { auditToAgentStats, auditToThroughput } from '@/lib/live-metrics'
+import { auditToAgentStats, auditToThroughput, artifactLabel } from '@/lib/live-metrics'
 import type { AgentId } from '@/lib/types'
 import type { ApiArtifact } from '@/lib/api-types'
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts'
@@ -49,20 +49,6 @@ const ROUTER_AGENT_BY_UI_ID: Record<string, string> = {
   sales: 'Sales',
   marketing: 'Marketing',
   finance: 'Finance',
-}
-
-// Engineering artifact titles are all the generic "Engineering Feature
-// Implementation" string, so a list of them is indistinguishable by title
-// alone. metadata.generated_files carries the actual filenames the build
-// produced (e.g. "weather_app.py" vs "calculator.py") -- surface the most
-// identifying one instead so past builds are actually findable.
-function artifactLabel(a: { title: string; metadata: Record<string, unknown> }): string {
-  const files = Array.isArray(a.metadata?.generated_files) ? (a.metadata.generated_files as unknown[]) : []
-  const named = files
-    .filter((f): f is string => typeof f === 'string')
-    .filter(f => !f.startsWith('__pycache__') && f !== 'plan.md')
-    .sort((a, b) => (a.startsWith('test') ? 1 : 0) - (b.startsWith('test') ? 1 : 0))
-  return named[0] ?? a.title
 }
 
 const ROUTER_AGENT_KEYS: Record<string, string> = {

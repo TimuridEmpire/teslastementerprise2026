@@ -6,7 +6,7 @@
 import type {
   ApiAgent, ApiRegistration, ApiQueueItem, ApiAuditEvent,
   ApiHealth, ApiInterventionBody, ApiEnvelope, ApiQueueItemWire,
-  DeliveryState, MessageStatus, ApiArtifact,
+  DeliveryState, MessageStatus, ApiArtifact, ApiBuildRun,
 } from './api-types'
 import { getCachedAdminSecret, getCachedManagerKey } from './memory'
 
@@ -269,5 +269,20 @@ export const api = {
     // GET /artifacts/{artifact_id}  (admin)
     get: (artifactId: string) =>
       get<ApiArtifact>(`/artifacts/${encodeURIComponent(artifactId)}`, adminH()),
+  },
+
+  builds: {
+    // POST /builds/{artifact_id}/run  (admin) — extracts the artifact's
+    // embedded generated source and hosts it as a live local subprocess.
+    run: (artifactId: string) =>
+      post<ApiBuildRun>(`/builds/${encodeURIComponent(artifactId)}/run`, {}, adminH()),
+
+    // POST /builds/{artifact_id}/stop  (admin)
+    stop: (artifactId: string) =>
+      post<{ stopped: boolean }>(`/builds/${encodeURIComponent(artifactId)}/stop`, {}, adminH()),
+
+    // GET /builds/running  (admin)
+    running: () =>
+      get<ApiBuildRun[]>('/builds/running', adminH()),
   },
 }

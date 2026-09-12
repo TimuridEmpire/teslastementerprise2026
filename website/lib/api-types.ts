@@ -101,6 +101,18 @@ export interface ApiArtifact {
   content?:          string
 }
 
+// ─── Build hosting ────────────────────────────────────────────────────────────
+export interface ApiBuildRun {
+  artifact_id: string
+  port:        number
+  url:         string
+  pid:         number
+  started_at:  number
+  class_name:  string | null
+  init_error:  string | null
+  running:     boolean
+}
+
 // ─── Health ───────────────────────────────────────────────────────────────────
 export interface ApiHealth {
   status:  string
