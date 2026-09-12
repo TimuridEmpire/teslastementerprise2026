@@ -173,7 +173,7 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
       })
       setSent(true)
       setInstruction('')
-      setTimeout(() => setSent(false), 3000)
+      setTimeout(() => setSent(false), 8000)
     } catch (e) {
       setSendError(e instanceof Error ? e.message : 'Failed to send')
     } finally {
@@ -433,7 +433,7 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
             </div>
             {sent && (
               <div className="text-[11px] mt-1.5 flex items-center gap-1" style={{ color: 'var(--green)' }}>
-                <CheckCircle2 size={10} /> Instruction delivered to {agent.name}
+                <CheckCircle2 size={10} /> Delivered to {agent.name} — its response will appear in Recent Artifacts below (usually within a few seconds; longer if it calls a local model)
               </div>
             )}
             {sendError && (

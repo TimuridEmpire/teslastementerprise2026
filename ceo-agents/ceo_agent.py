@@ -180,6 +180,7 @@ class CeoAgent(ThreadSafeAgentMixin):
         subordinate_agents: Optional[List[str]] = None,
         *,
         context: Optional[Dict[str, Any]] = None,
+        source_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Chat-like CEO flow:
@@ -253,6 +254,7 @@ class CeoAgent(ThreadSafeAgentMixin):
                         "cycle_id": result["id"],
                     },
                     source_task_type="CEO_REASONING_LOOP",
+                    source_message_id=source_message_id,
                 )
                 if artifact:
                     result["artifact"] = artifact
@@ -602,6 +604,7 @@ class CeoAgent(ThreadSafeAgentMixin):
         artifact_type: str = "strategy",
         metadata: Optional[Dict[str, Any]] = None,
         source_task_type: Optional[str] = None,
+        source_message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         try:
             record = write_agent_artifact(
@@ -611,6 +614,7 @@ class CeoAgent(ThreadSafeAgentMixin):
                 artifact_type=artifact_type,
                 metadata=metadata,
                 source_task_type=source_task_type,
+                source_message_id=source_message_id,
             )
             self.logger.info("Wrote CEO artifact to %s", record.get("path"))
             self._emit_artifact_router_event_unlocked(record)
@@ -764,6 +768,7 @@ class CeoAgent(ThreadSafeAgentMixin):
                 message,
                 [str(x) for x in departments] if departments else None,
                 context=payload,
+                source_message_id=str(envelope.get("id") or "") or None,
             )
 
         if task == "MANAGER_INTERVENTION":
@@ -780,6 +785,7 @@ class CeoAgent(ThreadSafeAgentMixin):
                 instruction,
                 [str(x) for x in departments] if departments else None,
                 context={**payload, **(envelope.get("context") or {})},
+                source_message_id=str(envelope.get("id") or "") or None,
             )
 
         if task == "CEO_METRICS":

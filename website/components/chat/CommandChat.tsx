@@ -46,6 +46,47 @@ function makeWelcomeMessages(): ChatMsg[] {
   ]
 }
 
+const ARTIFACT_POLL_INTERVAL_MS = 2000
+const ARTIFACT_POLL_TIMEOUT_MS = 90_000
+
+// POST /manager/interventions only ever confirms a message was *queued* —
+// nothing polls it back with the agent's actual reply, so the chat bubble
+// used to say "Instruction queued..." and then never change, no matter what
+// happened. Artifacts are the visible signal of completed work (see
+// enterprise_router/agent_artifacts.py), and every fixed handler (CEO, PM,
+// Marketing, HR, Engineering) now stamps source_message_id with the id
+// /manager/interventions returned, so we can find "the artifact this agent
+// just wrote for this request" and show it as the reply instead.
+function extractArtifactBody(content: string): string {
+  const afterHeader = content.split(/\n---\n\n/).slice(1).join('\n---\n\n')
+  const body = (afterHeader || content).split(/\n## Metadata\n/)[0].trim()
+  return body.length > 3000
+    ? `${body.slice(0, 3000)}\n\n…(truncated — see the full artifact on /dashboard or /artifacts)`
+    : body
+}
+
+async function waitForArtifactReply(
+  recipient: string,
+  messageId: string,
+): Promise<{ title: string; body: string } | null> {
+  const deadline = Date.now() + ARTIFACT_POLL_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    try {
+      const artifacts = await api.artifacts.list(recipient, 5)
+      const match = artifacts.find(a => a.source_message_id === messageId)
+      if (match) {
+        const detail = await api.artifacts.get(match.artifact_id)
+        return { title: match.title, body: extractArtifactBody(detail.content ?? '') }
+      }
+    } catch {
+      // Transient fetch error — keep polling until the deadline instead of
+      // giving up on the first hiccup.
+    }
+    await new Promise(resolve => setTimeout(resolve, ARTIFACT_POLL_INTERVAL_MS))
+  }
+  return null
+}
+
 export default function CommandChat() {
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [sending, setSending] = useState(false)
@@ -100,25 +141,21 @@ export default function CommandChat() {
     setMessages(prev => [...prev, userMsg, loadingMsg])
     setSending(true)
 
+    const recipient = parsed.type === 'agent' ? routerAgentName(parsed.agentId) : 'CEO'
+    let messageId: string | null = null
+
     try {
-      const recipient = parsed.type === 'agent' ? routerAgentName(parsed.agentId) : 'CEO'
       const instruction = parsed.type === 'agent' ? parsed.text || raw : raw
       const taskType = recipient === 'CEO' ? 'CEO_REASONING_LOOP' : 'MANAGER_INTERVENTION'
 
-      await api.manager.intervene({
+      const result = await api.manager.intervene({
         recipient,
         instruction,
         task_type: taskType,
         priority: 'normal',
         context: { source: 'command_chat' },
       })
-
-      // Replace loading bubble with success
-      setMessages(prev => prev.map(m =>
-        m.id === loadingId
-          ? { ...m, loading: false, text: `Instruction queued for ${agentName}. Watch live outputs, audit, and queues for progress.` }
-          : m
-      ))
+      messageId = result.message_id
     } catch (err) {
       const errText = err instanceof Error ? err.message : 'Failed to deliver message'
       setMessages(prev => prev.map(m =>
@@ -131,9 +168,28 @@ export default function CommandChat() {
             }
           : m
       ))
-    } finally {
       setSending(false)
+      return
     }
+
+    // Submission succeeded — unblock the input right away so the user can
+    // keep chatting while this agent's real reply is polled for in the
+    // background. Real replies (especially CEO's local-model calls) can
+    // take anywhere from under a second to 30+ seconds.
+    setSending(false)
+
+    const reply = await waitForArtifactReply(recipient, messageId)
+    setMessages(prev => prev.map(m =>
+      m.id === loadingId
+        ? {
+            ...m,
+            loading: false,
+            text: reply
+              ? reply.body
+              : `${agentName} hasn't produced a visible artifact yet. Check /observability for audit history or /dashboard for the latest artifacts.`,
+          }
+        : m
+    ))
   }
 
   return (

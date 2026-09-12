@@ -75,6 +75,53 @@ class TestCeoCoreUnit(unittest.TestCase):
         self.assertEqual(metrics["tasks_per_agent"]["PM Agent"], 2)
         self.assertEqual(metrics["tasks_per_agent"]["Engineering Agent"], 1)
 
+    def test_reasoning_loop_reads_instruction_field_from_manager_intervention_payload(self):
+        """Regression test: EnterpriseRouter.submit_manager_intervention()
+        always puts the website Chat page's free text in
+        payload["instruction"] (see ceo_agent.py's on_bus_envelope docstring
+        comment), but the CEO_REASONING_LOOP branch used to only read
+        "message"/"prompt" — so every chat-originated request silently
+        reasoned over an empty string."""
+        ceo = CeoAgent(name="CEO")
+        with mock.patch.object(ceo, "execute_reasoning_loop", return_value={"ok": True}) as reasoning:
+            ceo.on_bus_envelope(
+                {
+                    "id": "mgr-abc123",
+                    "task_type": "CEO_REASONING_LOOP",
+                    "payload": {"instruction": "Build a scientific calculator."},
+                }
+            )
+
+        reasoning.assert_called_once()
+        args, kwargs = reasoning.call_args
+        self.assertEqual(args[0], "Build a scientific calculator.")
+        self.assertEqual(kwargs["source_message_id"], "mgr-abc123")
+
+    def test_reasoning_loop_stamps_artifact_with_source_message_id(self):
+        """The written artifact must be traceable back to the router message
+        that triggered it (used by the website Chat page to poll for the
+        agent's reply — see CommandChat.tsx's waitForArtifactReply())."""
+        ceo = CeoAgent(name="CEO")
+        ceo_module = importlib.import_module(ceo.__class__.__module__)
+
+        def fake_talk(prompt):
+            return "a strategic decision"
+
+        with mock.patch.object(ceo, "_talk_to_engine_unlocked", side_effect=fake_talk):
+            with mock.patch.object(ceo, "_chat_with_engine_unlocked", return_value="a summary"):
+                with mock.patch.object(ceo, "_delegate_strategy_to_pm_unlocked"):
+                    with mock.patch.object(ceo_module, "write_agent_artifact", return_value={"artifact_id": "art-1"}) as writer:
+                        ceo.on_bus_envelope(
+                            {
+                                "id": "mgr-xyz789",
+                                "task_type": "CEO_REASONING_LOOP",
+                                "payload": {"instruction": "Plan the roadmap."},
+                            }
+                        )
+
+        writer.assert_called_once()
+        self.assertEqual(writer.call_args.kwargs["source_message_id"], "mgr-xyz789")
+
     def test_writing_strategy_artifact_emits_router_event(self):
         ceo = CeoAgent(name="CEO")
         fake_record = {
