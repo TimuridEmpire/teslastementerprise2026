@@ -50,6 +50,35 @@ def sample_manager_intervention(instruction: str = "Build a scientific calculato
     }
 
 
+def test_augment_spec_with_rag_context_puts_the_real_spec_first(monkeypatch):
+    """Regression test: reproduced live, a request for "a weather app" built
+    a calculator instead, because retrieve_rag_context() returned a prior,
+    similar-looking calculator spec that used to be prepended *before* the
+    real instruction -- the local model fixated on the retrieved text
+    instead of the actual spec. The real spec must now come first, and the
+    retrieved block must be unambiguously marked as reference-only."""
+    module = load_engineering_module()
+    monkeypatch.setattr(
+        module,
+        "retrieve_rag_context",
+        lambda query, **kwargs: [{"agent_name": "Engineering", "title": "Old Calculator", "score": 0.9, "snippet": "Feature: Calculator..."}],
+    )
+    monkeypatch.setattr(
+        module,
+        "format_rag_context_block",
+        lambda hits, **kwargs: "## Related prior engineering specs/code\n- [Engineering] Old Calculator: Feature: Calculator...",
+    )
+
+    agent = module.EngineeringAgent(db=None)
+    real_spec = "Feature: Weather Lookup App\nDescription: Build a weather classification module."
+    augmented = agent._augment_spec_with_rag_context(real_spec)
+
+    assert augmented.startswith(real_spec)
+    assert augmented.index(real_spec) < augmented.index("Old Calculator")
+    assert "background only" in augmented.lower()
+    assert "do not implement" in augmented.lower()
+
+
 def test_engineering_light_demo_writes_artifact_and_returns_feature_response(monkeypatch):
     module = load_engineering_module()
     monkeypatch.setenv("ENGINEERING_LIGHT_DEMO", "1")

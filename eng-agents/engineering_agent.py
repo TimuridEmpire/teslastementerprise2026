@@ -907,7 +907,21 @@ class EngineeringAgent:
         block = format_rag_context_block(
             hits, header="Related prior engineering specs/code (semantic retrieval)"
         ) if hits else ""
-        return f"{block}\n\n{spec}" if block else spec
+        if not block:
+            return spec
+        # The actual spec must come first, and the retrieved block must be
+        # unambiguously marked as reference-only: reproduced live, a request
+        # for "a weather app" built a calculator instead, because a
+        # similar-looking prior calculator spec was retrieved and placed
+        # *before* the real instruction, and the local model fixated on it
+        # instead of what was actually asked.
+        return (
+            f"{spec}\n\n"
+            "--- The section below is background only, from unrelated prior "
+            "work. Do NOT implement anything described in it -- implement "
+            "ONLY the spec above. ---\n\n"
+            f"{block}"
+        )
 
     def handle_message(self, message):
         task_type = message["task_type"]
