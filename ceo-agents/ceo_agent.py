@@ -5,6 +5,7 @@
 # Import the logger from your custom logging file
 import datetime
 import os
+import time
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -344,22 +345,32 @@ class CeoAgent(ThreadSafeAgentMixin):
             "prompt": prompt,
             "stream": False,
         }
-        try:
-            # 30s, not 20s: on a memory-constrained machine, alternating between
-            # this generate call and the follow-up chat call (or an embedding
-            # call from the RAG hook) makes Ollama evict/reload models, and a
-            # cold reload alone can take 10-15s (see the identical fix for the
-            # vector store's embedding timeout).
-            response = requests.post(self.ollama_generate_url, json=payload, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-            if not isinstance(data, dict):
-                return "Strategic Link Error: invalid response payload from Mistral."
-            return data.get("response")
-        except requests.RequestException as e:
-            return f"Strategic Link Error: Ensure Docker is running. {e}"
-        except ValueError as e:
-            return f"Strategic Link Error: invalid JSON payload returned. {e}"
+        # One retry after a short pause, not just a longer timeout: on a
+        # memory-constrained machine, this call (and the RAG hook's embedding
+        # call right before it, and the follow-up chat call right after it)
+        # each want a different model loaded, so Ollama evicts and reloads
+        # between them. Observed live: this first call times out while the
+        # very next chat call succeeds immediately, because by then the model
+        # has finished loading server-side even though the first client
+        # request already gave up waiting. Retrying picks up that already-warm
+        # model instead of reporting a spurious error.
+        last_error: Optional[Exception] = None
+        for attempt in range(2):
+            if attempt > 0:
+                time.sleep(2)
+            try:
+                response = requests.post(self.ollama_generate_url, json=payload, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict):
+                    return "Strategic Link Error: invalid response payload from Mistral."
+                return data.get("response")
+            except requests.RequestException as e:
+                last_error = e
+                continue
+            except ValueError as e:
+                return f"Strategic Link Error: invalid JSON payload returned. {e}"
+        return f"Strategic Link Error: Ensure Docker is running. {last_error}"
 
     def _retrieve_rag_block_unlocked(self, query: str, *, top_k: int = 3) -> str:
         """
@@ -403,29 +414,40 @@ class CeoAgent(ThreadSafeAgentMixin):
             "messages": self._messages_with_rag_context_unlocked(user_message),
             "stream": False,
         }
-        try:
-            response = requests.post(self.ollama_chat_url, json=payload, timeout=25)
-            response.raise_for_status()
-            data = response.json()
-            if not isinstance(data, dict):
-                return "Strategic Link Error: invalid chat response payload from Mistral."
-            message_block = data.get("message")
-            if isinstance(message_block, dict):
-                assistant_reply = str(message_block.get("content") or "").strip()
-            else:
-                assistant_reply = str(data.get("response") or "").strip()
-            if not assistant_reply:
-                assistant_reply = "No response returned by Mistral chat endpoint."
-            self.chat_history.append({"role": "assistant", "content": assistant_reply})
-            return assistant_reply
-        except requests.RequestException as e:
-            err = f"Strategic Link Error: Ensure Docker is running. {e}"
-            self.chat_history.append({"role": "assistant", "content": err})
-            return err
-        except ValueError as e:
-            err = f"Strategic Link Error: invalid JSON payload returned. {e}"
-            self.chat_history.append({"role": "assistant", "content": err})
-            return err
+        # Same one-retry contract as _talk_to_engine_unlocked: on a
+        # memory-constrained machine, this call and the generate() call right
+        # before it want the same model loaded but keep evicting each other,
+        # so either one can time out on a cold reload while the other
+        # succeeds moments later. Retrying picks up the model once it's warm.
+        last_error: Optional[Exception] = None
+        for attempt in range(2):
+            if attempt > 0:
+                time.sleep(2)
+            try:
+                response = requests.post(self.ollama_chat_url, json=payload, timeout=25)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict):
+                    return "Strategic Link Error: invalid chat response payload from Mistral."
+                message_block = data.get("message")
+                if isinstance(message_block, dict):
+                    assistant_reply = str(message_block.get("content") or "").strip()
+                else:
+                    assistant_reply = str(data.get("response") or "").strip()
+                if not assistant_reply:
+                    assistant_reply = "No response returned by Mistral chat endpoint."
+                self.chat_history.append({"role": "assistant", "content": assistant_reply})
+                return assistant_reply
+            except requests.RequestException as e:
+                last_error = e
+                continue
+            except ValueError as e:
+                err = f"Strategic Link Error: invalid JSON payload returned. {e}"
+                self.chat_history.append({"role": "assistant", "content": err})
+                return err
+        err = f"Strategic Link Error: Ensure Docker is running. {last_error}"
+        self.chat_history.append({"role": "assistant", "content": err})
+        return err
 
     def oversee_company(self, subordinate_agents, context: Optional[Dict[str, Any]] = None):
         """The main workflow loop."""
