@@ -15,6 +15,11 @@ from message_schema import Message
 
 from .service import EnterpriseRouter
 
+try:  # pragma: no cover - semantic indexing is additive/optional
+    from . import vector_storage
+except Exception:  # pragma: no cover - never let RAG indexing block artifact writes
+    vector_storage = None
+
 JsonDict = dict[str, Any]
 
 
@@ -289,6 +294,28 @@ def write_agent_artifact(
         metadata=metadata,
     )
     out_path.write_text(content, encoding="utf-8")
+
+    if vector_storage is not None:
+        try:
+            # Best-effort, non-blocking semantic indexing hook: runs on a
+            # background thread so artifact persistence and router audit
+            # writes below are never delayed or blocked by embedding calls.
+            vector_storage.ingest_artifact_async(
+                {
+                    "artifact_id": artifact_id,
+                    "agent_name": name,
+                    "artifact_type": artifact_type,
+                    "title": title,
+                    "filename": out_name,
+                    "created_at": created_at,
+                    "metadata": metadata or {},
+                    "source_message_id": source_message_id,
+                    "source_task_type": source_task_type,
+                },
+                content,
+            )
+        except Exception:  # pragma: no cover - indexing must never break artifact writes
+            pass
 
     record: JsonDict = {
         "artifact_id": artifact_id,

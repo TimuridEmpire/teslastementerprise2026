@@ -31,11 +31,12 @@ This README is intentionally detailed. It is written for both technical contribu
 16. [Docker and Local LLM Notes](#docker-and-local-llm-notes)
 17. [Environment Variables](#environment-variables)
 18. [Storage Backends](#storage-backends)
-19. [Common Workflows](#common-workflows)
-20. [Troubleshooting](#troubleshooting)
-21. [Security and Privacy Notes](#security-and-privacy-notes)
-22. [Developer Notes](#developer-notes)
-23. [Graphify Architecture Notes](#graphify-architecture-notes)
+19. [Local Vector Store and RAG](#local-vector-store-and-rag)
+20. [Common Workflows](#common-workflows)
+21. [Troubleshooting](#troubleshooting)
+22. [Security and Privacy Notes](#security-and-privacy-notes)
+23. [Developer Notes](#developer-notes)
+24. [Graphify Architecture Notes](#graphify-architecture-notes)
 
 ## Project at a Glance
 
@@ -198,7 +199,11 @@ SQLite implementation of router persistence. This is the normal local-developmen
 
 `enterprise_router/agent_artifacts.py`
 
-Writes markdown deliverables from agents into `artifacts/`, indexes them, and serves public-safe artifact metadata/content through the router API.
+Writes markdown deliverables from agents into `artifacts/`, indexes them, and serves public-safe artifact metadata/content through the router API. Every write also fires a best-effort, non-blocking semantic-indexing hook into `enterprise_router/vector_storage.py`.
+
+`enterprise_router/vector_storage.py`
+
+Embedded, local vector storage layer for semantic search and local Retrieval-Augmented Generation (RAG). Owns its own SQLite file (`vector_store.db`, separate from the router's own database and from `agent_backlog.py`), embeds text locally through an Ollama-compatible endpoint, and runs brute-force cosine-similarity ANN search with numpy. See [Local Vector Store and RAG](#local-vector-store-and-rag).
 
 ### Agent Logic and Planning Notes
 
@@ -628,6 +633,8 @@ Important endpoints:
 - `GET /audit`
 - `GET /artifacts`
 - `GET /artifacts/{artifact_id}`
+- `GET /rag/search` — semantic search over the local vector store (additive, read-only; see [Local Vector Store and RAG](#local-vector-store-and-rag))
+- `GET /rag/stats`
 
 ### Authentication Model
 
@@ -1107,6 +1114,7 @@ The test suite covers:
 - Artifact APIs.
 - Thread-safe agent behavior.
 - Distribution token behavior.
+- Local vector store persistence, ANN retrieval accuracy, RAG helper degradation, and the `/rag/search` and `/rag/stats` router API endpoints (`tests/test_vector_storage.py`).
 
 `pytest.ini` sets the repo root on `pythonpath` and points pytest at `tests/`.
 
@@ -1292,6 +1300,10 @@ Advantages:
 - Good for demos and tests.
 - Stores router agents, queue records, leases, and audit events.
 
+### Local Vector Store
+
+A dedicated SQLite file (`vector_store.db` by default) stores embedded documents for semantic search / RAG. It is additive and secondary: the router's own SQLite database and `agent_backlog.py` remain the systems of record for queue/lease/audit state and local execution history. See [Local Vector Store and RAG](#local-vector-store-and-rag).
+
 ### Local Files
 
 Local files are used for:
@@ -1302,6 +1314,94 @@ Local files are used for:
 - Optional message-bus JSONL logs.
 
 Local generated secret files should stay out of Git.
+
+## Local Vector Store and RAG
+
+`enterprise_router/vector_storage.py` adds an embedded, local vector storage layer on top of the router's existing SQLite/JSON persistence. It supports semantic conceptual search and local Retrieval-Augmented Generation (RAG) for the CEO, PM, and Engineering agents.
+
+### What It Is
+
+- An embedded local vector database, backed by its own dedicated SQLite file (`vector_store.db` by default — override with `ENTERPRISE_VECTOR_DB`). It is a separate file from `enterprise_router.db`, `enterprise_backlog.db`, and `pm_storage.json`.
+- Dense embedding vectors are produced locally through an Ollama-compatible embeddings endpoint (`http://localhost:11434/api/embeddings` by default), consistent with the CEO and Engineering agents' existing local Ollama conventions. No cloud embedding service is used.
+- Similarity search is brute-force cosine similarity over stored vectors using numpy — an embedded ANN approach with zero external vector database service.
+
+### Non-Destructive by Design
+
+- This module never reads or writes `enterprise_router/sqlite_storage.py`'s tables, `agent_backlog.py`'s tables, or artifact JSON/markdown files directly. It only reads the `record`/`content` already produced by `write_agent_artifact(...)` and stores its own derived embedding index.
+- Every public function in `vector_storage.py` degrades to a safe no-op (`None` / `[]`) instead of raising when the vector store is disabled, SQLite is unavailable, or the local embedding endpoint is unreachable. A down embedding service never blocks router queue polling, message ack/nack, or artifact persistence.
+
+### Ingestion
+
+`enterprise_router/agent_artifacts.py` calls `vector_storage.ingest_artifact_async(...)` on every `write_agent_artifact(...)` call. Ingestion runs on a background thread pool by default (`ENTERPRISE_VECTOR_STORE_ASYNC=1`), so it never blocks synchronous message routing or artifact writes. Set `ENTERPRISE_VECTOR_STORE_ASYNC=0` for deterministic, synchronous ingestion (used by the test suite).
+
+Because every agent's markdown deliverable already flows through `write_agent_artifact(...)`, this single hook indexes CEO strategy artifacts, PM roadmaps and strategy-routing plans, Engineering feature implementation reports, HR staffing reviews, and Marketing campaign briefs — without any agent-specific ingestion code.
+
+### RAG Retrieval Helpers
+
+- `vector_storage.semantic_search(query, ...)` — ANN similarity search, returns matching documents with a cosine similarity `score`.
+- `vector_storage.retrieve_rag_context(query, ...)` — same search, returns prompt-safe trimmed snippets (plain data, not a `message_schema.Message` field).
+- `vector_storage.format_rag_context_block(hits, ...)` — renders retrieved snippets as a text block for prompt injection.
+
+Current agent integrations:
+
+- **CEO** (`ceo-agents/ceo_agent.py`) — `CEO_CHAT` and `CEO_REASONING_LOOP` retrieve semantically related prior CEO artifacts and inject them as a transient system message (chat) or a prompt prefix (reasoning loop) before calling the local Ollama model. Retrieved context is never written back into `self.chat_history`, so it does not accumulate turn over turn.
+- **Engineering** (`eng-agents/engineering_agent.py`) — before building an implementation plan, `EngineeringAgent` retrieves related prior Engineering specs/artifacts and prepends them to the spec text sent to `FullSystem`/light-demo mode.
+- **PM** (`pm-agents/pm_agent.py`) — `DEFINE_Q2_ROADMAP` cross-references semantically related prior roadmap artifacts and appends a "Related prior roadmaps" section to the generated roadmap.
+
+All of the above are best-effort: if RAG retrieval fails or returns nothing, the agent proceeds exactly as it did before this feature existed.
+
+### Router API
+
+Two additive, admin-protected endpoints expose the vector store the same way `/artifacts` exposes markdown deliverables:
+
+- `GET /rag/search?query=...&top_k=5&agent=...&source_type=...`
+- `GET /rag/stats`
+
+Both return an empty/disabled response instead of an error if the vector store is unavailable.
+
+### Environment Variables
+
+`ENTERPRISE_VECTOR_STORE_ENABLED`
+
+Set to `0` to disable the vector store entirely (no ingestion, no retrieval, no local embedding calls). Defaults to enabled.
+
+`ENTERPRISE_VECTOR_DB`
+
+SQLite path for the vector store. Default: `<repo>/vector_store.db`.
+
+`ENTERPRISE_VECTOR_STORE_ASYNC`
+
+Set to `0` to force synchronous ingestion (useful for tests/demos where you need to query immediately after writing an artifact). Defaults to `1` (background thread pool).
+
+`ENTERPRISE_VECTOR_EMBEDDING_URL`
+
+Local embeddings endpoint. Default: `http://localhost:11434/api/embeddings`.
+
+`ENTERPRISE_VECTOR_EMBEDDING_MODEL`
+
+Local embedding model name. Default: `nomic-embed-text` (`all-minilm` is also a good local option).
+
+`ENTERPRISE_VECTOR_EMBEDDING_TIMEOUT_S`
+
+HTTP timeout in seconds for embedding calls. Default: `8`.
+
+`ENTERPRISE_VECTOR_TOP_K`
+
+Default number of results returned by semantic search when a caller does not specify `top_k`. Default: `5`.
+
+### Pulling a Local Embedding Model
+
+```powershell
+docker exec -it ollama-enterprise ollama pull nomic-embed-text
+```
+
+Or, without Docker:
+
+```powershell
+ollama pull nomic-embed-text
+```
+
+If the model or the Ollama service is unavailable, ingestion still records the document text (for later re-embedding) but the row is excluded from similarity search until it has a vector, and retrieval helpers simply return no results — they never raise.
 
 ## Common Workflows
 

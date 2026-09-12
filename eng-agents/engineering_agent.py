@@ -32,6 +32,12 @@ try:
 except ImportError:
     write_agent_artifact = None
 
+try:  # pragma: no cover - RAG retrieval is additive/optional
+    from enterprise_router.vector_storage import format_rag_context_block, retrieve_rag_context
+except ImportError:
+    retrieve_rag_context = None
+    format_rag_context_block = None
+
 try:
     from message_schema import Message
 except ImportError:
@@ -844,6 +850,27 @@ class EngineeringAgent:
         context["source_task_type"] = str(message.get("task_type", ""))
         return context
 
+    def _augment_spec_with_rag_context(self, spec: str) -> str:
+        """
+        Semantic search over previously indexed Engineering artifacts (past
+        feature specs, generated-file summaries) for context conceptually
+        related to this spec. Best-effort: returns ``spec`` unchanged when
+        RAG retrieval is unavailable, disabled, or the local embedding
+        service is unreachable — feature implementation must keep working
+        with or without it.
+        """
+        if retrieve_rag_context is None or format_rag_context_block is None or not spec:
+            return spec
+        try:
+            hits = retrieve_rag_context(spec, agent_name=self.name, top_k=3)
+        except Exception as exc:
+            print(f"[Engineering] RAG context retrieval failed, continuing without it: {exc}")
+            return spec
+        block = format_rag_context_block(
+            hits, header="Related prior engineering specs/code (semantic retrieval)"
+        ) if hits else ""
+        return f"{block}\n\n{spec}" if block else spec
+
     def handle_message(self, message):
         task_type = message["task_type"]
         payload = message.get("payload", {})
@@ -851,7 +878,7 @@ class EngineeringAgent:
         context = self._response_context(message)
 
         try:
-            spec = self._build_spec(task_type, payload)
+            spec = self._augment_spec_with_rag_context(self._build_spec(task_type, payload))
             use_light_demo = (
                 os.environ.get("ENGINEERING_LIGHT_DEMO", "").strip().lower()
                 in {"1", "true", "yes", "on"}

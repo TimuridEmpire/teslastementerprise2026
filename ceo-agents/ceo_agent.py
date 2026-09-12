@@ -14,6 +14,12 @@ from enterprise_router.agent_artifacts import write_agent_artifact
 from enterprise_router_client import EnterpriseRouterClient
 from message_schema import Message
 
+try:  # pragma: no cover - RAG retrieval is additive/optional
+    from enterprise_router.vector_storage import format_rag_context_block, retrieve_rag_context
+except ImportError:  # pragma: no cover
+    retrieve_rag_context = None
+    format_rag_context_block = None
+
 from thread_safe_agent import ThreadSafeAgentMixin
 
 if TYPE_CHECKING:
@@ -344,11 +350,46 @@ class CeoAgent(ThreadSafeAgentMixin):
         except ValueError as e:
             return f"Strategic Link Error: invalid JSON payload returned. {e}"
 
+    def _retrieve_rag_block_unlocked(self, query: str, *, top_k: int = 3) -> str:
+        """
+        Best-effort semantic retrieval of prior artifacts relevant to
+        ``query``, formatted for prompt injection. Returns ``""`` (never
+        raises) when RAG retrieval is unavailable, disabled, unconfigured,
+        or the local embedding service is unreachable — strategic reasoning
+        must keep working with or without RAG context.
+        """
+        if retrieve_rag_context is None or format_rag_context_block is None or not query:
+            return ""
+        try:
+            hits = retrieve_rag_context(query, agent_name=self.name, top_k=top_k)
+        except Exception as exc:
+            self.logger.warning(
+                "RAG context retrieval failed, continuing without it: %s", exc
+            )
+            return ""
+        return format_rag_context_block(hits) if hits else ""
+
+    def _messages_with_rag_context_unlocked(self, user_message: str) -> List[Dict[str, str]]:
+        """
+        Build the message list sent to the model for this turn: the full
+        chat history plus a transient system message carrying semantically
+        retrieved context, inserted just before the newest user turn. The
+        retrieved block is never persisted into ``self.chat_history`` so it
+        does not accumulate/duplicate across a long conversation.
+        """
+        block = self._retrieve_rag_block_unlocked(user_message)
+        if not block or not self.chat_history:
+            return list(self.chat_history)
+        messages = list(self.chat_history[:-1])
+        messages.append({"role": "system", "content": block})
+        messages.append(self.chat_history[-1])
+        return messages
+
     def _chat_with_engine_unlocked(self, user_message: str) -> Any:
         self.chat_history.append({"role": "user", "content": user_message})
         payload = {
             "model": self.model_name,
-            "messages": self.chat_history,
+            "messages": self._messages_with_rag_context_unlocked(user_message),
             "stream": False,
         }
         try:
@@ -509,7 +550,10 @@ class CeoAgent(ThreadSafeAgentMixin):
 
     def _make_strategic_decision_unlocked(self, data) -> Any:
         self.logger.info("Sending data to Mistral for strategic analysis...")
+        rag_block = self._retrieve_rag_block_unlocked(str(data))
+        context_prefix = f"{rag_block}\n\n" if rag_block else ""
         prompt = (
+            f"{context_prefix}"
             f"You are the CEO. Based on these department reports, "
             f"identify the single most important strategic priority for the next quarter: {data}"
         )

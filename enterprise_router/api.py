@@ -8,6 +8,12 @@ from .agent_artifacts import get_agent_artifact, list_agent_artifacts
 from .models import AgentRecord, MessageEnvelope, RegistrationRequest, RoutingHints
 from .service import EnterpriseRouter
 
+try:  # pragma: no cover - RAG search endpoints are additive/optional
+    from .vector_storage import semantic_search, vector_store_stats
+except Exception:  # pragma: no cover - never let vector storage break the router API
+    semantic_search = None
+    vector_store_stats = None
+
 try:  # pragma: no cover - optional dependency
     from fastapi import Depends, FastAPI, Header, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
@@ -366,6 +372,28 @@ def create_app(settings: RouterSettings | None = None):
         if artifact is None:
             raise HTTPException(status_code=404, detail="Artifact not found.")
         return artifact
+
+    @app.get("/rag/search")
+    def rag_search(
+        query: str,
+        top_k: int = 5,
+        agent: str | None = None,
+        source_type: str | None = None,
+        _: None = Depends(require_admin),
+    ) -> list[dict[str, Any]]:
+        """Semantic search over the local vector store (artifacts, code
+        snippets, roadmaps). Additive/read-only — returns [] when the
+        vector store or local embedding service is unavailable rather than
+        raising, so it never affects router health."""
+        if semantic_search is None:
+            return []
+        return semantic_search(query, top_k=top_k, agent_name=agent, source_type=source_type)
+
+    @app.get("/rag/stats")
+    def rag_stats(_: None = Depends(require_admin)) -> dict[str, Any]:
+        if vector_store_stats is None:
+            return {"enabled": False, "document_count": 0, "embedded_document_count": 0}
+        return vector_store_stats()
 
     @app.post("/agents/{agent_name}/issue-api-key")
     def issue_api_key(agent_name: str, _: None = Depends(require_admin)) -> dict[str, Any]:

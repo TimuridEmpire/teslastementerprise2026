@@ -33,6 +33,12 @@ try:
 except ImportError:  # pragma: no cover - artifact API is optional in isolated PM tests
     write_agent_artifact = None
 
+try:  # pragma: no cover - RAG retrieval is additive/optional
+    from enterprise_router.vector_storage import format_rag_context_block, retrieve_rag_context
+except ImportError:  # pragma: no cover - RAG retrieval is optional in isolated PM tests
+    retrieve_rag_context = None
+    format_rag_context_block = None
+
 
 class PMAgent:
     def __init__(self, name: str = "PM") -> None:
@@ -139,6 +145,26 @@ class PMAgent:
     # Task handlers
     # ------------------------------------------------------------------
 
+    def _related_roadmaps_context(self, goal: str) -> str:
+        """
+        Semantic cross-reference against previously indexed PM roadmap
+        artifacts sharing conceptual/contextual meaning with ``goal`` (not
+        keyword matching against ``pm_storage.json``). Best-effort: returns
+        ``""`` when RAG retrieval is unavailable, disabled, or the local
+        embedding service is unreachable — roadmap creation must keep
+        working with or without it.
+        """
+        if retrieve_rag_context is None or format_rag_context_block is None or not goal:
+            return ""
+        try:
+            hits = retrieve_rag_context(goal, source_type="roadmap", top_k=3)
+        except Exception as exc:
+            self.logger.warning(
+                "Roadmap RAG cross-reference failed, continuing without it: %s", exc
+            )
+            return ""
+        return format_rag_context_block(hits, header="Related prior roadmaps") if hits else ""
+
     def handle_define_roadmap(self, msg: Dict[str, Any]) -> None:
         self.logger.info(f"PMAgent: handling DEFINE_Q2_ROADMAP {msg['id']}")
         payload = msg["payload"]
@@ -176,6 +202,9 @@ class PMAgent:
 
         # Write the roadmap artifact and announce it to CEO.
         roadmap_md = render_roadmap_md(product, goal, prioritized)
+        related_roadmaps_block = self._related_roadmaps_context(goal)
+        if related_roadmaps_block:
+            roadmap_md = f"{roadmap_md}\n\n{related_roadmaps_block}\n"
         roadmap_artifact = write_artifact(
             agent=self.name,
             name="roadmap",
