@@ -32,6 +32,24 @@ def sample_implement_feature() -> dict:
     }
 
 
+def sample_manager_intervention(instruction: str = "Build a scientific calculator.") -> dict:
+    """Shape sent by website/components/chat/CommandChat.tsx's `/eng <text>`
+    command: POST /manager/interventions -> EnterpriseRouter.
+    submit_manager_intervention() always folds the free-text instruction
+    into payload["instruction"]."""
+    return {
+        "id": "eng-msg-2",
+        "timestamp": "2026-05-26T00:00:00Z",
+        "sender": "MANAGER",
+        "recipient": "Engineering",
+        "task_type": "MANAGER_INTERVENTION",
+        "context": {"source": "command_chat"},
+        "payload": {"instruction": instruction},
+        "status": "pending",
+        "error": "",
+    }
+
+
 def test_engineering_light_demo_writes_artifact_and_returns_feature_response(monkeypatch):
     module = load_engineering_module()
     monkeypatch.setenv("ENGINEERING_LIGHT_DEMO", "1")
@@ -48,3 +66,43 @@ def test_engineering_light_demo_writes_artifact_and_returns_feature_response(mon
     assert response["payload"]["artifact_id"] == "art-eng"
     assert response["payload"]["details"]["status"] == "light_demo"
     assert response["payload"]["generated_files"] == []
+
+
+def test_engineering_handles_manager_intervention_from_chat_eng_command(monkeypatch):
+    """Regression test: the website Chat page's `/eng <request>` command
+    sends task_type MANAGER_INTERVENTION (Engineering is registered to
+    accept it — scripts/bootstrap_router_agents.py) but engineering_agent.py
+    previously had no handler for it, so every `/eng` request errored out
+    instead of building anything."""
+    module = load_engineering_module()
+    monkeypatch.setenv("ENGINEERING_LIGHT_DEMO", "1")
+    monkeypatch.setattr(module, "write_agent_artifact", lambda *args, **kwargs: {"artifact_id": "art-calc"})
+    monkeypatch.setattr(module.EngineeringAgent, "_generated_files", lambda _self: [])
+
+    agent = module.EngineeringAgent(db=None)
+    response = agent.handle_message(sample_manager_intervention("Build a scientific calculator."))
+
+    assert response["sender"] == "Engineering"
+    assert response["recipient"] == "MANAGER"
+    assert response["task_type"] == "FEATURE_RESPONSE"
+    assert response["status"] == "done"
+    assert response["payload"]["artifact_id"] == "art-calc"
+    assert response["payload"]["details"]["status"] == "light_demo"
+    assert "scientific calculator" in response["payload"]["details"]["spec_preview"]
+
+
+def test_engineering_manager_intervention_without_instruction_fails_cleanly(monkeypatch):
+    module = load_engineering_module()
+    monkeypatch.setenv("ENGINEERING_LIGHT_DEMO", "1")
+    monkeypatch.setattr(module, "write_agent_artifact", lambda *args, **kwargs: {"artifact_id": "art-err"})
+    monkeypatch.setattr(module.EngineeringAgent, "_generated_files", lambda _self: [])
+
+    agent = module.EngineeringAgent(db=None)
+    message = sample_manager_intervention("")
+    message["payload"] = {}
+
+    response = agent.handle_message(message)
+
+    assert response["status"] == "error"
+    assert response["recipient"] == "MANAGER"
+    assert "instruction" in response["payload"]["error"]

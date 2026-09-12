@@ -775,6 +775,35 @@ class EngineeringAgent:
                 f"Acceptance criteria:\n{criteria}"
             )
 
+        if task_type == "MANAGER_INTERVENTION":
+            # Engineering is registered to accept MANAGER_INTERVENTION (see
+            # scripts/bootstrap_router_agents.py) — this is what the website
+            # Chat page's `/eng <request>` command sends. It previously had
+            # no handler here and always errored out. `EnterpriseRouter.
+            # submit_manager_intervention()` always folds the free-text
+            # instruction into payload["instruction"], so treat it the same
+            # as an IMPLEMENT_FEATURE spec.
+            instruction = str(
+                payload.get("spec")
+                or payload.get("description")
+                or payload.get("instruction")
+                or payload.get("message")
+                or payload.get("prompt")
+                or ""
+            ).strip()
+            if not instruction:
+                raise ValueError(
+                    "MANAGER_INTERVENTION payload requires an 'instruction' "
+                    "(or 'spec'/'description')."
+                )
+            criteria = "\n".join(f"- {c}" for c in payload.get("acceptance_criteria", []))
+            return (
+                f"Feature: {payload.get('feature_name') or 'Manager-requested implementation'}\n"
+                f"Feature ID: {payload.get('feature_id') or 'FT-MANAGER-INTERVENTION'}\n"
+                f"Description: {instruction}\n"
+                f"Acceptance criteria:\n{criteria}"
+            )
+
         raise ValueError(f"Unknown task_type: {task_type}")
 
     def _generated_files(self):

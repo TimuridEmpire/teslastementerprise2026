@@ -74,7 +74,7 @@ class VectorStoreSettings:
     db_path: str = ""
     embedding_url: str = "http://localhost:11434/api/embeddings"
     embedding_model: str = "nomic-embed-text"
-    embedding_timeout_s: float = 8.0
+    embedding_timeout_s: float = 20.0
     default_top_k: int = 5
     async_ingestion: bool = True
 
@@ -89,7 +89,7 @@ class VectorStoreSettings:
                 "ENTERPRISE_VECTOR_EMBEDDING_URL", "http://localhost:11434/api/embeddings"
             ),
             embedding_model=os.getenv("ENTERPRISE_VECTOR_EMBEDDING_MODEL", "nomic-embed-text"),
-            embedding_timeout_s=float(os.getenv("ENTERPRISE_VECTOR_EMBEDDING_TIMEOUT_S", "8")),
+            embedding_timeout_s=float(os.getenv("ENTERPRISE_VECTOR_EMBEDDING_TIMEOUT_S", "20")),
             default_top_k=int(os.getenv("ENTERPRISE_VECTOR_TOP_K", "5")),
             async_ingestion=_truthy_env(
                 os.getenv("ENTERPRISE_VECTOR_STORE_ASYNC", ""), default=True

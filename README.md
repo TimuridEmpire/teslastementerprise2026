@@ -434,7 +434,7 @@ Supported tasks include:
 - `generate_code`
 - `FEATURE_RESPONSE`
 - `THREAD_ALLOCATION`
-- `MANAGER_INTERVENTION`
+- `MANAGER_INTERVENTION` — this is what the website Chat page's `/eng <request>` command sends (`POST /manager/interventions`, which always folds the free-text instruction into `payload.instruction`). Engineering treats it exactly like `IMPLEMENT_FEATURE`, building a spec from `payload.instruction` (or `spec`/`description` if present).
 
 Light demo mode:
 
@@ -1383,7 +1383,7 @@ Local embedding model name. Default: `nomic-embed-text` (`all-minilm` is also a 
 
 `ENTERPRISE_VECTOR_EMBEDDING_TIMEOUT_S`
 
-HTTP timeout in seconds for embedding calls. Default: `8`.
+HTTP timeout in seconds for embedding calls. Default: `20` — generous on purpose, because on memory-constrained machines Ollama evicts and reloads a model when you alternate between a chat model and an embedding model, and that cold reload alone can take 10+ seconds. Raise it further if you see "Local embedding endpoint unreachable" warnings that are actually just slow reloads, not real outages.
 
 `ENTERPRISE_VECTOR_TOP_K`
 
