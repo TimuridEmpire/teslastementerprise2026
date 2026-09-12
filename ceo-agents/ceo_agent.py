@@ -15,6 +15,7 @@ from agent_backlog import AgentBacklog
 from enterprise_router.agent_artifacts import write_agent_artifact
 from enterprise_router_client import EnterpriseRouterClient
 from message_schema import Message
+import ollama_lock
 
 try:  # pragma: no cover - RAG retrieval is additive/optional
     from enterprise_router.vector_storage import format_rag_context_block, retrieve_rag_context
@@ -363,21 +364,22 @@ class CeoAgent(ThreadSafeAgentMixin):
         # request already gave up waiting. Retrying picks up that already-warm
         # model instead of reporting a spurious error.
         last_error: Optional[Exception] = None
-        for attempt in range(2):
-            if attempt > 0:
-                time.sleep(2)
-            try:
-                response = requests.post(self.ollama_generate_url, json=payload, timeout=30)
-                response.raise_for_status()
-                data = response.json()
-                if not isinstance(data, dict):
-                    return "Strategic Link Error: invalid response payload from Mistral."
-                return data.get("response")
-            except requests.RequestException as e:
-                last_error = e
-                continue
-            except ValueError as e:
-                return f"Strategic Link Error: invalid JSON payload returned. {e}"
+        with ollama_lock.ollama_call():
+            for attempt in range(2):
+                if attempt > 0:
+                    time.sleep(2)
+                try:
+                    response = requests.post(self.ollama_generate_url, json=payload, timeout=30)
+                    response.raise_for_status()
+                    data = response.json()
+                    if not isinstance(data, dict):
+                        return "Strategic Link Error: invalid response payload from Mistral."
+                    return data.get("response")
+                except requests.RequestException as e:
+                    last_error = e
+                    continue
+                except ValueError as e:
+                    return f"Strategic Link Error: invalid JSON payload returned. {e}"
         return f"Strategic Link Error: Ensure Docker is running. {last_error}"
 
     def _retrieve_rag_block_unlocked(self, query: str, *, top_k: int = 3) -> str:
@@ -428,31 +430,32 @@ class CeoAgent(ThreadSafeAgentMixin):
         # so either one can time out on a cold reload while the other
         # succeeds moments later. Retrying picks up the model once it's warm.
         last_error: Optional[Exception] = None
-        for attempt in range(2):
-            if attempt > 0:
-                time.sleep(2)
-            try:
-                response = requests.post(self.ollama_chat_url, json=payload, timeout=25)
-                response.raise_for_status()
-                data = response.json()
-                if not isinstance(data, dict):
-                    return "Strategic Link Error: invalid chat response payload from Mistral."
-                message_block = data.get("message")
-                if isinstance(message_block, dict):
-                    assistant_reply = str(message_block.get("content") or "").strip()
-                else:
-                    assistant_reply = str(data.get("response") or "").strip()
-                if not assistant_reply:
-                    assistant_reply = "No response returned by Mistral chat endpoint."
-                self.chat_history.append({"role": "assistant", "content": assistant_reply})
-                return assistant_reply
-            except requests.RequestException as e:
-                last_error = e
-                continue
-            except ValueError as e:
-                err = f"Strategic Link Error: invalid JSON payload returned. {e}"
-                self.chat_history.append({"role": "assistant", "content": err})
-                return err
+        with ollama_lock.ollama_call():
+            for attempt in range(2):
+                if attempt > 0:
+                    time.sleep(2)
+                try:
+                    response = requests.post(self.ollama_chat_url, json=payload, timeout=25)
+                    response.raise_for_status()
+                    data = response.json()
+                    if not isinstance(data, dict):
+                        return "Strategic Link Error: invalid chat response payload from Mistral."
+                    message_block = data.get("message")
+                    if isinstance(message_block, dict):
+                        assistant_reply = str(message_block.get("content") or "").strip()
+                    else:
+                        assistant_reply = str(data.get("response") or "").strip()
+                    if not assistant_reply:
+                        assistant_reply = "No response returned by Mistral chat endpoint."
+                    self.chat_history.append({"role": "assistant", "content": assistant_reply})
+                    return assistant_reply
+                except requests.RequestException as e:
+                    last_error = e
+                    continue
+                except ValueError as e:
+                    err = f"Strategic Link Error: invalid JSON payload returned. {e}"
+                    self.chat_history.append({"role": "assistant", "content": err})
+                    return err
         err = f"Strategic Link Error: Ensure Docker is running. {last_error}"
         self.chat_history.append({"role": "assistant", "content": err})
         return err

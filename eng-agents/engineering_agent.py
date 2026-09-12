@@ -9,6 +9,9 @@ import time
 import shutil
 import importlib.util
 from pathlib import Path
+
+import ollama_lock
+
 try:
     from crewai import Agent, Crew, Task
     from crewai.llm import LLM
@@ -394,7 +397,8 @@ class FullSystem:
             agent=chosen_lead
         )
         crew = Crew(agents=[chosen_lead], tasks=[task])
-        plan = str(crew.kickoff())
+        with ollama_lock.ollama_call():
+            plan = str(crew.kickoff())
         crew.reset_memories(command_type="all")
         return str(plan)  # Return the output of the first task, which is the development plan
 
@@ -441,7 +445,8 @@ class FullSystem:
             agent=chosen_lead
         )
         crew_files = Crew(agents=[chosen_lead], tasks=[task_create_files])
-        files = [name.strip() for name in str(crew_files.kickoff()).split(",") if name.strip()]
+        with ollama_lock.ollama_call():
+            files = [name.strip() for name in str(crew_files.kickoff()).split(",") if name.strip()]
         crew_files.reset_memories(command_type="all")
 
         # Enforce mandatory source files so contract checks remain satisfiable.
@@ -521,7 +526,8 @@ class FullSystem:
             agent=chosen_dev
         )
         crew = Crew(agents=[chosen_dev], tasks=[task])
-        result = self.clean_code(str(crew.kickoff()))
+        with ollama_lock.ollama_call():
+            result = self.clean_code(str(crew.kickoff()))
         crew.reset_memories(command_type="all")
         # Write generated file into OUTPUT_DIR so it stays separate from the agent's own code
         out_path = Path(OUTPUT_DIR) / file
@@ -588,7 +594,8 @@ class FullSystem:
             agent=chosen_tester
         )
         crew = Crew(agents=[chosen_tester], tasks=[task])
-        result = self.clean_code(str(crew.kickoff()))
+        with ollama_lock.ollama_call():
+            result = self.clean_code(str(crew.kickoff()))
         crew.reset_memories(command_type="all")
         out_path = Path(OUTPUT_DIR) / file
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -703,7 +710,8 @@ class FullSystem:
                 agent=chosen_lead
             )
             crew = Crew(agents=[chosen_lead], tasks=[find_problems_task])
-            feedback = str(crew.kickoff())
+            with ollama_lock.ollama_call():
+                feedback = str(crew.kickoff())
             crew.reset_memories(command_type="all")
             print(f"Iteration {iteration} — Lead feedback:\n{feedback}")
 
@@ -735,7 +743,8 @@ class FullSystem:
                     agent=chosen_dev
                 )
                 fix_crew = Crew(agents=[chosen_dev], tasks=[fix_task])
-                fixed_code = str(fix_crew.kickoff())
+                with ollama_lock.ollama_call():
+                    fixed_code = str(fix_crew.kickoff())
                 fix_crew.reset_memories(command_type="all")
                 out_path = Path(OUTPUT_DIR) / file
                 with open(out_path, "w", encoding="utf-8") as f:

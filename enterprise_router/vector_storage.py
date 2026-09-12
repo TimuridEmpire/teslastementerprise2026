@@ -40,6 +40,8 @@ import logging
 import os
 import sqlite3
 import threading
+
+import ollama_lock
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -147,13 +149,14 @@ class OllamaEmbeddingClient:
             return None
 
         try:
-            response = requests.post(
-                self.base_url,
-                json={"model": self.model, "prompt": cleaned},
-                timeout=self.timeout_s,
-            )
-            response.raise_for_status()
-            data = response.json()
+            with ollama_lock.ollama_call():
+                response = requests.post(
+                    self.base_url,
+                    json={"model": self.model, "prompt": cleaned},
+                    timeout=self.timeout_s,
+                )
+                response.raise_for_status()
+                data = response.json()
         except requests.RequestException as exc:
             logger.warning(
                 "Local embedding endpoint unreachable (%s); continuing without RAG context: %s",
