@@ -64,6 +64,8 @@ class MarketingAgent:
                 self.handle_launch_campaign(m)
             elif task_type == "PM_REPORT":
                 self.handle_pm_report(m)
+            elif task_type == "MANAGER_INTERVENTION":
+                self.handle_manager_intervention(m)
             else:
                 self.logger.warning(f"MarketingAgent: unhandled task_type '{task_type}'")
 
@@ -118,7 +120,40 @@ class MarketingAgent:
             details=msg.get("payload", {}),
         )
 
-    def handle_launch_campaign(self, msg: Dict[str, Any]) -> None:
+    def handle_manager_intervention(self, msg: Dict[str, Any]) -> None:
+        """
+        Handle a manager-originated free-text instruction (the website Chat
+        page's `/mkt <request>` command sends this via POST
+        /manager/interventions, which always folds the text into
+        payload["instruction"]). Marketing had no handler for this
+        task_type at all before — the message was silently acked with no
+        visible effect. Treat the instruction as a campaign concept and
+        reuse the LAUNCH_CAMPAIGN pipeline so it goes through the same
+        budget-approval / campaign-brief-artifact logic.
+        """
+        self.logger.info(f"MarketingAgent: handling MANAGER_INTERVENTION {msg.get('id')}")
+        payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+        instruction = str(
+            payload.get("product_name")
+            or payload.get("instruction")
+            or payload.get("spec")
+            or payload.get("message")
+            or payload.get("prompt")
+            or ""
+        ).strip()
+        if not instruction:
+            raise ValueError("MANAGER_INTERVENTION payload requires an 'instruction'.")
+
+        campaign_msg = dict(msg)
+        campaign_msg["payload"] = {
+            "product_name": instruction,
+            "features": payload.get("features") or [],
+        }
+        self.handle_launch_campaign(campaign_msg, source_task_type="MANAGER_INTERVENTION")
+
+    def handle_launch_campaign(
+        self, msg: Dict[str, Any], *, source_task_type: str = "LAUNCH_CAMPAIGN"
+    ) -> None:
         self.logger.info(f"MarketingAgent: handling LAUNCH_CAMPAIGN {msg.get('id')}")
         payload = msg.get("payload", {})
         product = payload.get("product_name", "Product")
@@ -234,7 +269,7 @@ class MarketingAgent:
                     artifact_type="campaign-brief",
                     metadata={"project_id": project_id, "product_name": product, "budget": budget},
                     source_message_id=str(msg.get("id", "")),
-                    source_task_type="LAUNCH_CAMPAIGN",
+                    source_task_type=source_task_type,
                 )
             # publish_artifact() sends ARTIFACT_PUBLISHED to CEO via the router.
             # It is non-fatal: a failure logs a warning and never raises.

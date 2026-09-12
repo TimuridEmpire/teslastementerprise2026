@@ -271,7 +271,16 @@ def process_one_hr_message(
     backlog.record_interaction(envelope)
     try:
         supervisor(envelope)
-        if envelope.get("task_type") == "TALENT_REALLOCATION":
+        # TALENT_REALLOCATION is HR's normal staffing path. MANAGER_INTERVENTION
+        # is what the website Chat page's `/hr <request>` command sends — HR is
+        # registered to accept it, but callSupervisor() silently no-ops on it
+        # whenever langchain/langchain_ollama aren't installed (the common local
+        # case), so `/hr` requests had no visible effect at all. Writing the
+        # staffing artifact here doesn't depend on those optional packages, and
+        # write_staffing_artifact() already reads payload["instruction"] (the
+        # field submit_manager_intervention() always populates), so no other
+        # change is needed to make it produce useful output.
+        if envelope.get("task_type") in ("TALENT_REALLOCATION", "MANAGER_INTERVENTION"):
             write_staffing_artifact(envelope)
     except Exception as exc:
         client.nack_message(message_id, recipient, reason=str(exc))

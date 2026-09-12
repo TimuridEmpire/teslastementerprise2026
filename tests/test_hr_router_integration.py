@@ -86,6 +86,40 @@ def test_process_one_hr_message_writes_staffing_artifact(monkeypatch):
     assert artifacts[0][1]["source_task_type"] == "TALENT_REALLOCATION"
 
 
+def test_process_one_hr_message_writes_staffing_artifact_for_manager_intervention(monkeypatch):
+    """Regression test: the website Chat page's `/hr <request>` command
+    sends task_type MANAGER_INTERVENTION (HR is registered to accept it —
+    see scripts/bootstrap_router_agents.py). callSupervisor() silently
+    no-ops on it whenever langchain/langchain_ollama aren't installed
+    (simulated here by the no-op `supervisor` stand-in), so before this fix
+    a `/hr` request had no visible effect at all — no artifact, nothing."""
+    hr_agent = load_hr_agent_module()
+    envelope = sample_hr_envelope()
+    envelope["task_type"] = "MANAGER_INTERVENTION"
+    envelope["sender"] = "MANAGER"
+    envelope["payload"] = {"instruction": "Hire 2 SREs for the router observability push."}
+    client = FakeRouterClient(envelope)
+    artifacts = []
+
+    def fake_write_agent_artifact(agent_name, **kwargs):
+        artifacts.append((agent_name, kwargs))
+        return {"artifact_id": "art-hr-mi"}
+
+    monkeypatch.setattr(hr_agent, "write_agent_artifact", fake_write_agent_artifact)
+
+    processed = hr_agent.process_one_hr_message(
+        router_client=client,
+        supervisor=lambda _envelope: None,  # simulates langchain being unavailable
+    )
+
+    assert processed is True
+    assert client.acked == [("hr-msg-1", "HR")]
+    assert artifacts
+    assert artifacts[0][0] == "HR"
+    assert artifacts[0][1]["source_task_type"] == "MANAGER_INTERVENTION"
+    assert "Hire 2 SREs" in artifacts[0][1]["body"]
+
+
 def test_process_one_hr_message_nacks_after_supervisor_failure():
     hr_agent = load_hr_agent_module()
     client = FakeRouterClient(sample_hr_envelope())

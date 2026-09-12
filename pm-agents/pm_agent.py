@@ -86,6 +86,8 @@ class PMAgent:
                 self.handle_ceo_strategy_directive(m)
             elif task == "FEATURE_RESPONSE":
                 self.handle_engineering_feature_response(m)
+            elif task == "MANAGER_INTERVENTION":
+                self.handle_manager_intervention(m)
             else:
                 self.logger.warning(f"PMAgent: unhandled task_type '{task}'")
 
@@ -291,6 +293,84 @@ class PMAgent:
             task_type="FEATURE_RESPONSE",
             context=self._base_context(msg, project_id),
             payload={"features": prioritized},
+        )
+        log_inter_agent_message(self.logger, response_msg, direction="SENDING")
+        self.backlog.record_interaction(response_msg)
+        submit(response_msg)
+
+    def handle_manager_intervention(self, msg: Dict[str, Any]) -> None:
+        """
+        Handle a manager-originated free-text instruction (the website Chat
+        page's `/prod <request>` command sends this via POST
+        /manager/interventions, which always folds the text into
+        payload["instruction"]). PM had no handler for this task_type at
+        all before — the message was silently acked with no visible
+        effect. Treat the instruction as a feature-request goal: generate
+        + prioritize features (same pipeline as REQUEST_FEATURES), write a
+        visible PM artifact, and reply to the sender.
+        """
+        self.logger.info(f"PMAgent: handling MANAGER_INTERVENTION {msg.get('id')}")
+        payload = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+        instruction = str(
+            payload.get("goal")
+            or payload.get("instruction")
+            or payload.get("spec")
+            or payload.get("message")
+            or payload.get("prompt")
+            or ""
+        ).strip()
+        requester = msg.get("sender") or "MANAGER"
+        if not instruction:
+            raise ValueError("MANAGER_INTERVENTION payload requires an 'instruction'.")
+
+        features = generate_features_llm(instruction)
+        prioritized = moscow_prioritize(features)
+        project_id = self._resolve_project_id(msg)
+
+        if project_id:
+            add_request_to_project(project_id, {
+                "type": "manager_intervention",
+                "requester": requester,
+                "message_id": msg.get("id", ""),
+                "instruction": instruction,
+                "features": features,
+            })
+        storage.add_project_event(
+            source=self.name,
+            event_type="manager_intervention_handled",
+            project_id=project_id,
+            message_id=msg.get("id", ""),
+            details={"requester": requester, "instruction": instruction},
+        )
+
+        if write_agent_artifact is not None:
+            def _bucket(label: str, items: list) -> str:
+                names = [f.get("name", str(f)) if isinstance(f, dict) else str(f) for f in items]
+                return f"## {label}\n\n" + ("\n".join(f"- {n}" for n in names) if names else "- none")
+
+            body = (
+                "## Manager Request\n\n"
+                f"{instruction}\n\n"
+                f"{_bucket('Must have', prioritized.get('must', []))}\n\n"
+                f"{_bucket('Should have', prioritized.get('should', []))}\n\n"
+                f"{_bucket('Could have', prioritized.get('could', []))}\n"
+            )
+            write_agent_artifact(
+                self.name,
+                title="PM Manager Request Response",
+                artifact_type="feature-response",
+                body=body,
+                metadata={"project_id": project_id, "source": "MANAGER_INTERVENTION", "requester": requester},
+                source_message_id=str(msg.get("id", "")),
+                source_task_type="MANAGER_INTERVENTION",
+            )
+
+        response_msg = Message.create(
+            sender=self.name,
+            recipient=requester,
+            task_type="FEATURE_RESPONSE",
+            context=self._base_context(msg, project_id),
+            payload={"features": prioritized, "instruction": instruction},
         )
         log_inter_agent_message(self.logger, response_msg, direction="SENDING")
         self.backlog.record_interaction(response_msg)
