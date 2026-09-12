@@ -51,6 +51,20 @@ const ROUTER_AGENT_BY_UI_ID: Record<string, string> = {
   finance: 'Finance',
 }
 
+// Engineering artifact titles are all the generic "Engineering Feature
+// Implementation" string, so a list of them is indistinguishable by title
+// alone. metadata.generated_files carries the actual filenames the build
+// produced (e.g. "weather_app.py" vs "calculator.py") -- surface the most
+// identifying one instead so past builds are actually findable.
+function artifactLabel(a: { title: string; metadata: Record<string, unknown> }): string {
+  const files = Array.isArray(a.metadata?.generated_files) ? (a.metadata.generated_files as unknown[]) : []
+  const named = files
+    .filter((f): f is string => typeof f === 'string')
+    .filter(f => !f.startsWith('__pycache__') && f !== 'plan.md')
+    .sort((a, b) => (a.startsWith('test') ? 1 : 0) - (b.startsWith('test') ? 1 : 0))
+  return named[0] ?? a.title
+}
+
 const ROUTER_AGENT_KEYS: Record<string, string> = {
   CEO: process.env.NEXT_PUBLIC_CEO_API_KEY ?? '',
   PM: process.env.NEXT_PUBLIC_PM_API_KEY ?? process.env.NEXT_PUBLIC_PRODUCT_API_KEY ?? '',
@@ -519,9 +533,22 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
                               color: isSelected ? 'var(--text-1)' : 'var(--text-2)',
                             }}
                           >
-                            <span className="truncate">{a.title}</span>
-                            <span className="font-mono flex-shrink-0" style={{ color: 'var(--text-3)', fontSize: 10 }}>
-                              {new Date(a.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            <span className="truncate font-mono">{artifactLabel(a)}</span>
+                            <span className="flex-shrink-0 flex items-center gap-1.5">
+                              <span
+                                className="badge"
+                                style={{
+                                  fontSize: 9, padding: '1px 6px',
+                                  background: a.metadata?.status === 'success' ? 'rgba(52,211,153,0.10)' : a.metadata?.status === 'failed' ? 'rgba(248,113,113,0.10)' : 'rgba(255,255,255,0.06)',
+                                  color: a.metadata?.status === 'success' ? 'var(--green)' : a.metadata?.status === 'failed' ? 'var(--red)' : 'var(--text-3)',
+                                  borderColor: 'transparent',
+                                }}
+                              >
+                                {String(a.metadata?.status ?? 'unknown')}
+                              </span>
+                              <span className="font-mono" style={{ color: 'var(--text-3)', fontSize: 10 }}>
+                                {new Date(a.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </span>
                             </span>
                           </button>
                         )
