@@ -16,24 +16,38 @@ const AGENT_COLORS: Record<string, string> = Object.fromEntries(
 let msgCounter = 0
 function uid() { return `msg-${++msgCounter}-${Date.now()}` }
 
-const WELCOME: ChatMsg = {
-  id: 'welcome',
-  role: 'system',
-  text: 'BRAIN Enterprise Lab — Command interface active',
-  timestamp: new Date(),
-}
-
-const INTRO: ChatMsg = {
-  id: 'intro',
-  role: 'agent',
-  text: 'Welcome. I\'m your company\'s command interface. Type a message to broadcast to all departments, or use /ceo /prod /eng /hr /sales /mkt /fin to route directly to an agent.',
-  agentName: 'BRAIN',
-  agentColor: 'var(--indigo)',
-  timestamp: new Date(),
+// Built inside an effect (client-only, post-mount) rather than as module-level
+// constants. `timestamp: new Date()` rendered via `toLocaleTimeString()` during
+// the initial render caused a hydration mismatch: the server render and the
+// client's first render evaluate `new Date()` at different real moments (and
+// Node's default ICU locale data can format it differently than the browser's
+// `Intl` anyway), so the server-rendered HTML and the client's first render
+// disagreed on the displayed time — "Text content does not match
+// server-rendered HTML." Seeding `messages` as `[]` means the server and the
+// client's first render both show nothing, so they always match; these two
+// bootstrap messages are then added afterward, strictly client-side.
+function makeWelcomeMessages(): ChatMsg[] {
+  const now = new Date()
+  return [
+    {
+      id: 'welcome',
+      role: 'system',
+      text: 'BRAIN Enterprise Lab — Command interface active',
+      timestamp: now,
+    },
+    {
+      id: 'intro',
+      role: 'agent',
+      text: 'Welcome. I\'m your company\'s command interface. Type a message to broadcast to all departments, or use /ceo /prod /eng /hr /sales /mkt /fin to route directly to an agent.',
+      agentName: 'BRAIN',
+      agentColor: 'var(--indigo)',
+      timestamp: now,
+    },
+  ]
 }
 
 export default function CommandChat() {
-  const [messages, setMessages] = useState<ChatMsg[]>([WELCOME, INTRO])
+  const [messages, setMessages] = useState<ChatMsg[]>([])
   const [sending, setSending] = useState(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -43,6 +57,7 @@ export default function CommandChat() {
     bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' })
   }, [])
 
+  useEffect(() => { setMessages(makeWelcomeMessages()) }, [])
   useEffect(() => { scrollToBottom(false) }, [])
   useEffect(() => { scrollToBottom() }, [messages, scrollToBottom])
 
