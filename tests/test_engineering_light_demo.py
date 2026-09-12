@@ -120,6 +120,32 @@ def test_engineering_handles_manager_intervention_from_chat_eng_command(monkeypa
     assert "scientific calculator" in response["payload"]["details"]["spec_preview"]
 
 
+def test_artifact_body_embeds_generated_source_before_next_clean(monkeypatch, tmp_path):
+    """Regression test: OUTPUT_DIR is one shared scratch directory that
+    _clean_output_dir() wipes at the start of the *next* build, so a past
+    build's code was only ever visible on disk until something else ran --
+    e.g. the weather app build got silently overwritten by a later
+    calculator build, with no way to recover its code from the control
+    plane afterward. _artifact_body() must embed the actual source into the
+    artifact while the files still exist."""
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    module = load_engineering_module()
+
+    (tmp_path / "weather_app.py").write_text("class WeatherApp:\n    pass\n", encoding="utf-8")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "weather_app.cpython-313.pyc").write_bytes(b"\x00\x01")
+
+    agent = module.EngineeringAgent(db=None)
+    body = agent._artifact_body("Build a weather app.", result={"status": "success", "iterations": 1})
+
+    assert "## Generated Source" in body
+    assert "weather_app.py" in body
+    assert "class WeatherApp" in body
+    assert "```python" in body
+    # __pycache__ is build noise, not source -- it should not be listed or embedded.
+    assert "__pycache__" not in body
+
+
 def test_engineering_manager_intervention_without_instruction_fails_cleanly(monkeypatch):
     module = load_engineering_module()
     monkeypatch.setenv("ENGINEERING_LIGHT_DEMO", "1")

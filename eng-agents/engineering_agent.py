@@ -822,8 +822,40 @@ class EngineeringAgent:
         return sorted(
             str(path.relative_to(output_path)).replace("\\", "/")
             for path in output_path.rglob("*")
-            if path.is_file() and ".git" not in path.parts
+            if path.is_file() and ".git" not in path.parts and "__pycache__" not in path.parts
         )
+
+    _CODE_FENCE_LANG = {
+        ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx",
+        ".md": "markdown", ".json": "json", ".sh": "bash", ".html": "html",
+        ".css": "css", ".yml": "yaml", ".yaml": "yaml",
+    }
+    # OUTPUT_DIR is a single shared scratch directory that _clean_output_dir()
+    # wipes at the start of the *next* build -- generated code has no home of
+    # its own otherwise. Embedding the actual source into the artifact body
+    # (read here, while the files still exist, before the next build starts)
+    # is what makes a past build's code durably visible in the control plane
+    # instead of getting silently overwritten.
+    _MAX_EMBEDDED_SOURCE_BYTES = 60_000
+
+    def _read_generated_file_sources(self, generated_files):
+        output_path = Path(OUTPUT_DIR)
+        sections = []
+        budget = self._MAX_EMBEDDED_SOURCE_BYTES
+        for rel in generated_files:
+            path = output_path / rel
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if budget <= 0:
+                sections.append(f"### `{rel}`\n\n_(omitted — artifact size limit reached)_\n")
+                continue
+            text = text[:budget]
+            budget -= len(text)
+            lang = self._CODE_FENCE_LANG.get(Path(rel).suffix, "")
+            sections.append(f"### `{rel}`\n\n```{lang}\n{text}\n```\n")
+        return "\n".join(sections)
 
     def _artifact_body(self, spec, result=None, error=None):
         generated_files = self._generated_files()
@@ -836,6 +868,11 @@ class EngineeringAgent:
             if result else "Processing stopped before review iteration completed."
         )
         error_section = f"\n\n## Error\n\n{error}" if error else ""
+        source_section = ""
+        if generated_files:
+            source_code = self._read_generated_file_sources(generated_files)
+            if source_code:
+                source_section = f"\n\n## Generated Source\n\n{source_code}"
 
         return (
             "## Engineering Request\n\n"
@@ -846,7 +883,8 @@ class EngineeringAgent:
             f"{test_status}\n\n"
             "## Review Notes\n\n"
             f"{review_notes}"
-            f"{error_section}\n"
+            f"{error_section}"
+            f"{source_section}\n"
         )
 
     def _write_artifact(self, message, spec, result=None, error=None):
