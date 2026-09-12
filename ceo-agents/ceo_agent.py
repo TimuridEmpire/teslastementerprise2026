@@ -225,7 +225,7 @@ class CeoAgent(ThreadSafeAgentMixin):
                     "Finance Agent",
                 ]
                 reports = self._gather_information_unlocked(departments)
-                strategic_decision = self._make_strategic_decision_unlocked(reports)
+                strategic_decision = self._make_strategic_decision_unlocked(reports, message=message)
                 final_summary = self._chat_with_engine_unlocked(
                     (
                         "Create a concise executive summary from the CEO request, department "
@@ -581,15 +581,33 @@ class CeoAgent(ThreadSafeAgentMixin):
             f"({latest.get('status', 'unknown')}) at {latest.get('timestamp', 'unknown time')}."
         )
 
-    def _make_strategic_decision_unlocked(self, data) -> Any:
+    def _make_strategic_decision_unlocked(self, data, *, message: str = "") -> Any:
         self.logger.info("Sending data to Mistral for strategic analysis...")
-        rag_block = self._retrieve_rag_block_unlocked(str(data))
+        # Ground both the RAG lookup and the prompt in the actual CEO request
+        # when there is one (chat/reasoning-loop calls), instead of only the
+        # department-report boilerplate ("no recorded activity yet" on every
+        # call). Reproduced live: with no request text in the prompt, the
+        # model had nothing concrete to decide about, RAG's query was near-
+        # identical across calls (so it surfaced whatever prior artifact
+        # happened to match that boilerplate) and the "strategic decision"
+        # ended up describing an unrelated *previous* request instead of the
+        # one actually being asked about.
+        rag_block = self._retrieve_rag_block_unlocked(message or str(data))
         context_prefix = f"{rag_block}\n\n" if rag_block else ""
-        prompt = (
-            f"{context_prefix}"
-            f"You are the CEO. Based on these department reports, "
-            f"identify the single most important strategic priority for the next quarter: {data}"
-        )
+        if message:
+            prompt = (
+                f"{context_prefix}"
+                f"You are the CEO. The CEO request is: {message}\n"
+                f"Department reports: {data}\n"
+                f"Identify the single most important strategic priority for the "
+                f"next quarter that directly addresses the CEO request above."
+            )
+        else:
+            prompt = (
+                f"{context_prefix}"
+                f"You are the CEO. Based on these department reports, "
+                f"identify the single most important strategic priority for the next quarter: {data}"
+            )
         decision = self._talk_to_engine_unlocked(prompt)
         self.logger.warning(f"Strategic Decision Executed: {decision}")
         return decision

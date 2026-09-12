@@ -122,6 +122,35 @@ class TestCeoChatAndMetrics(unittest.TestCase):
         # Only one user/assistant pair recorded, not one per attempt.
         self.assertEqual(len(ceo.chat_history), 2)
 
+    def test_strategic_decision_prompt_includes_the_actual_ceo_request(self):
+        """Regression test: the generate() prompt used to only ever include
+        department-report boilerplate ("no recorded activity yet" on every
+        call) and never the CEO's actual request text. Reproduced live: a
+        request about "a customer referral program" produced a strategic
+        decision about an unrelated *earlier* request ("scientific
+        calculator") instead, because the model had nothing concrete about
+        the current request to reason over."""
+        ceo = CeoAgent(name="CEO")
+        seen_prompts = []
+
+        def fake_post(url, json, timeout):
+            if url == ceo.ollama_generate_url:
+                seen_prompts.append(json.get("prompt", ""))
+                return _FakeResponse({"response": "Launch the referral program via email."})
+            if url == ceo.ollama_chat_url:
+                return _FakeResponse({"message": {"content": "Final CEO summary."}})
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        with patch("_ceo_agents_legacy.ceo_agent.requests.post", side_effect=fake_post):
+            result = ceo.execute_reasoning_loop(
+                "Plan and launch a customer referral program this quarter.",
+                subordinate_agents=["PM"],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(seen_prompts), 1)
+        self.assertIn("Plan and launch a customer referral program this quarter.", seen_prompts[0])
+
 
 if __name__ == "__main__":
     unittest.main()
