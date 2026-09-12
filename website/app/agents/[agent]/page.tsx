@@ -1,7 +1,7 @@
 'use client'
 
 import { notFound } from 'next/navigation'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import {
   Crown, Package, Code2, Users, TrendingUp, Megaphone,
@@ -13,6 +13,7 @@ import { AGENTS, MESSAGES } from '@/lib/mock-data'
 import { useArtifacts, useQueue, useAudit } from '@/lib/hooks'
 import { auditToAgentStats, auditToThroughput } from '@/lib/live-metrics'
 import type { AgentId } from '@/lib/types'
+import type { ApiArtifact } from '@/lib/api-types'
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts'
 import { api } from '@/lib/api'
 
@@ -81,6 +82,26 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
   const { data: audit } = useAudit(200)
   const hasRouterQueue = queue !== null
   const latestArtifact = artifacts?.[0] ?? null
+
+  // Older outputs only carry metadata from the list endpoint (no content) --
+  // fetch the full record on demand when the operator actually picks one,
+  // so past builds (e.g. an earlier feature build) are browsable in the UI
+  // instead of requiring a direct API call.
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null)
+  const [fetchedArtifacts, setFetchedArtifacts] = useState<Record<string, ApiArtifact>>({})
+  const [artifactFetchError, setArtifactFetchError] = useState('')
+
+  useEffect(() => {
+    if (!selectedArtifactId || fetchedArtifacts[selectedArtifactId]) return
+    setArtifactFetchError('')
+    api.artifacts.get(selectedArtifactId)
+      .then(full => setFetchedArtifacts(prev => ({ ...prev, [selectedArtifactId]: full })))
+      .catch(() => setArtifactFetchError('Unable to load that output from the router.'))
+  }, [selectedArtifactId, fetchedArtifacts])
+
+  const displayedArtifact = selectedArtifactId
+    ? (fetchedArtifacts[selectedArtifactId] ?? artifacts?.find(a => a.artifact_id === selectedArtifactId) ?? null)
+    : latestArtifact
 
   // Real per-agent numbers from the router's own audit log — replaces the
   // fabricated Tasks Done / Success / Messages / Resource Usage /
@@ -447,20 +468,20 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
                 {latestArtifact ? 'live' : 'waiting'}
               </span>
             </div>
-            {latestArtifact ? (
+            {displayedArtifact ? (
               <div className="space-y-3">
                 <div>
                   <div className="text-[12px] font-semibold leading-snug" style={{ color: 'var(--text-1)' }}>
-                    {latestArtifact.title}
+                    {displayedArtifact.title}
                   </div>
                   <div className="text-[10px] font-mono mt-1 flex flex-wrap gap-x-2 gap-y-1" style={{ color: 'var(--text-3)' }}>
-                    <span>{latestArtifact.artifact_type}</span>
+                    <span>{displayedArtifact.artifact_type}</span>
                     <span>·</span>
-                    <span>{new Date(latestArtifact.created_at).toLocaleString()}</span>
-                    {latestArtifact.source_task_type && (
+                    <span>{new Date(displayedArtifact.created_at).toLocaleString()}</span>
+                    {displayedArtifact.source_task_type && (
                       <>
                         <span>·</span>
-                        <span>{latestArtifact.source_task_type}</span>
+                        <span>{displayedArtifact.source_task_type}</span>
                       </>
                     )}
                   </div>
@@ -477,11 +498,35 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
                     fontFamily: 'var(--font-mono)',
                   }}
                 >
-                  {latestArtifact.content ?? 'Artifact content is loading...'}
+                  {artifactFetchError || displayedArtifact.content || 'Artifact content is loading...'}
                 </pre>
                 {artifacts && artifacts.length > 1 && (
-                  <div className="text-[10.5px] font-mono" style={{ color: 'var(--text-3)' }}>
-                    {artifacts.length - 1} older {artifacts.length - 1 === 1 ? 'output' : 'outputs'} available
+                  <div className="space-y-1">
+                    <div className="text-[10.5px] font-mono" style={{ color: 'var(--text-3)' }}>
+                      {artifacts.length} outputs — click to view any past build
+                    </div>
+                    <div className="flex flex-col gap-1 max-h-48 overflow-auto">
+                      {artifacts.map(a => {
+                        const isSelected = a.artifact_id === (selectedArtifactId ?? latestArtifact?.artifact_id)
+                        return (
+                          <button
+                            key={a.artifact_id}
+                            onClick={() => setSelectedArtifactId(a.artifact_id)}
+                            className="text-left px-2.5 py-1.5 rounded-md text-[11px] flex items-center justify-between gap-2"
+                            style={{
+                              background: isSelected ? 'rgba(255,255,255,0.06)' : 'transparent',
+                              border: `1px solid ${isSelected ? 'var(--border)' : 'transparent'}`,
+                              color: isSelected ? 'var(--text-1)' : 'var(--text-2)',
+                            }}
+                          >
+                            <span className="truncate">{a.title}</span>
+                            <span className="font-mono flex-shrink-0" style={{ color: 'var(--text-3)', fontSize: 10 }}>
+                              {new Date(a.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
