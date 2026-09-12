@@ -90,6 +90,36 @@ def test_pm_manager_intervention_without_instruction_raises_cleanly(monkeypatch)
     assert raised
 
 
+def test_pm_sends_engineering_the_actual_ceo_strategy_not_a_generic_spec(monkeypatch):
+    """Regression test: handle_ceo_strategy_directive used to send Engineering
+    a fixed, generic spec ("Implement the first engineering increment that
+    directly supports the CEO strategy...") no matter what the CEO actually
+    decided, so Engineering always built the same non-specific "increment"
+    instead of whatever was actually asked for."""
+    module = load_pm_module()
+    monkeypatch.setattr(module, "write_agent_artifact", lambda *a, **k: {"artifact_id": "art-1"})
+    submitted = []
+    monkeypatch.setattr(module, "submit", lambda msg: submitted.append(msg))
+
+    agent = module.PMAgent(name="PM")
+    strategy_text = "Launch a scientific calculator product with trig, log, and exponent support."
+    message = {
+        "id": "msg-1",
+        "sender": "CEO",
+        "recipient": "PM",
+        "task_type": "CEO_STRATEGY_DIRECTIVE",
+        "context": {},
+        "payload": {"strategy": strategy_text},
+    }
+
+    agent.handle_ceo_strategy_directive(message)
+
+    eng_messages = [m for m in submitted if m.recipient == "Engineering"]
+    assert len(eng_messages) == 1
+    assert strategy_text in eng_messages[0].payload["spec"]
+    assert "the first engineering increment that directly supports" not in eng_messages[0].payload["spec"]
+
+
 def test_pm_process_dispatches_manager_intervention(monkeypatch):
     module = load_pm_module()
     agent = module.PMAgent(name="PM")

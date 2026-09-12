@@ -15,6 +15,42 @@ class TestCeoCoreUnit(unittest.TestCase):
         self.assertEqual(out["agent"], "CEO")
         self.assertEqual(out["task_type"], "CEO_PING")
 
+    def test_default_departments_use_router_names_and_see_real_backlog_activity(self):
+        """Regression test: the default department list used to be "PM
+        Agent"/"Engineering Agent"/etc. (display-style names), but every
+        real envelope's sender/recipient is the router name ("PM",
+        "Engineering", ...) -- see agent_transport.py / enterprise_router/
+        service.py. AgentBacklog.get_agent_history() does an exact match,
+        so with the old names CEO always reported "no recorded activity
+        yet" for every department, no matter how much real work had
+        actually happened."""
+        import tempfile
+
+        from agent_backlog import AgentBacklog
+        from message_schema import Message
+
+        ceo = CeoAgent(name="CEO")
+        with tempfile.TemporaryDirectory() as tmp:
+            ceo.backlog = AgentBacklog(f"{tmp}/backlog.db")
+            ceo.backlog.record_interaction(
+                Message.create(
+                    sender="PM",
+                    recipient="CEO",
+                    task_type="PM_REPORT",
+                    payload={"status": "roadmap_defined"},
+                )
+            )
+
+            with mock.patch.object(ceo, "_talk_to_engine_unlocked", return_value="decision"):
+                with mock.patch.object(ceo, "_chat_with_engine_unlocked", return_value="summary"):
+                    with mock.patch.object(ceo, "_write_strategy_artifact_unlocked", return_value=None):
+                        with mock.patch.object(ceo, "_delegate_strategy_to_pm_unlocked"):
+                            result = ceo.execute_reasoning_loop("Plan next quarter")
+
+        pm_report = next(r for r in result["department_reports"] if r.startswith("Status report from PM:"))
+        self.assertIn("PM_REPORT", pm_report)
+        self.assertNotIn("no recorded activity yet", pm_report)
+
     def test_environment_signal_envelope_updates_state(self):
         ceo = CeoAgent(name="CEO")
         self.assertFalse(ceo.children_nearby_detected)

@@ -216,13 +216,21 @@ class CeoAgent(ThreadSafeAgentMixin):
                     else None
                 )
 
+                # Router-name form ("PM", not "PM Agent"): AgentBacklog.
+                # get_agent_history() does an exact match against the
+                # sender/recipient every real envelope actually carries (see
+                # enterprise_router/service.py, agent_transport.py). With the
+                # "X Agent" display-style names this default list had before,
+                # every lookup silently missed, and CEO reported "no recorded
+                # activity yet" for every department on every single call, no
+                # matter how much real work had actually happened.
                 departments = subordinate_agents or [
-                    "PM Agent",
-                    "Engineering Agent",
-                    "Marketing Agent",
-                    "HR Agent",
-                    "Sales Agent",
-                    "Finance Agent",
+                    "PM",
+                    "Engineering",
+                    "Marketing",
+                    "HR",
+                    "Sales",
+                    "Finance",
                 ]
                 reports = self._gather_information_unlocked(departments)
                 strategic_decision = self._make_strategic_decision_unlocked(reports, message=message)
@@ -917,8 +925,7 @@ if __name__ == "__main__":
     
     # 2. Define Departments
     company_agents = [
-        "PM Agent", "Engineering Agent", "Marketing Agent", 
-        "HR Agent", "Sales Agent", "Finance Agent", "UI Agent"
+        "PM", "Engineering", "Marketing", "HR", "Sales", "Finance"
     ]
     
     # 3. Execute Workflow

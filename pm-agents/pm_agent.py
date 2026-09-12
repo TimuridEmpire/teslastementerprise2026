@@ -439,12 +439,24 @@ class PMAgent:
             payload={
                 "feature_id": "FT-STRATEGY-001",
                 "feature_name": "CEO Strategy Execution Track",
+                # Previously a fixed, generic string regardless of what the
+                # CEO actually decided ("Implement the first engineering
+                # increment that directly supports the CEO strategy..."), so
+                # Engineering built the same non-specific "increment" no
+                # matter what was asked for. Now the actual strategy text
+                # (which, since the CEO fix, is grounded in the real request)
+                # is what Engineering is told to build.
                 "spec": (
-                    "Implement the first engineering increment that directly supports "
-                    "the CEO strategy and report completion status/blockers back to PM."
+                    f"Implement the engineering work described in this CEO strategy "
+                    f"directive, and report completion status/blockers back to PM:\n\n{strategy}"
+                    if strategy
+                    else (
+                        "Implement the first engineering increment that directly supports "
+                        "the CEO strategy and report completion status/blockers back to PM."
+                    )
                 ),
                 "acceptance_criteria": [
-                    "Feature increment aligns with CEO strategy directive.",
+                    "Implementation is a concrete, working increment of what the CEO strategy above describes — not a placeholder.",
                     "Implementation status is communicated back through router envelopes.",
                     "No direct non-router inter-agent communication is used.",
                 ],
