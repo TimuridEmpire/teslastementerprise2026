@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { AGENTS, MESSAGES } from '@/lib/mock-data'
 import { useArtifacts, useQueue, useAudit } from '@/lib/hooks'
-import { auditToAgentStats, auditToThroughput, artifactLabel } from '@/lib/live-metrics'
+import { auditToAgentStats, auditToThroughput, auditToAgentActivity, artifactLabel } from '@/lib/live-metrics'
 import type { AgentId } from '@/lib/types'
 import type { ApiArtifact } from '@/lib/api-types'
 import { RadarChart, Radar, PolarGrid, PolarAngleAxis, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts'
@@ -98,6 +98,7 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
   // mock-data.ts's static AGENTS/TASKS arrays regardless of what this
   // agent (or its router worker, if one exists) had actually done.
   const stats = auditToAgentStats(audit)[agent.id as AgentId]
+  const activity = auditToAgentActivity(audit)[agent.id as AgentId]
   const agentThroughput = auditToThroughput(
     (audit ?? []).filter(e => {
       const d = e.details as Record<string, unknown> | undefined
@@ -174,9 +175,12 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap mb-1">
               <h1 className="font-display text-xl font-bold" style={{ color }}>{agent.name}</h1>
-              <span className={`badge status-${agent.status}`}>
+              <span
+                className={`badge status-${activity.status === 'working' ? 'active' : activity.status === 'no-worker' ? 'offline' : 'idle'}`}
+                title={activity.lastEventAt ? `Last router activity: ${new Date(activity.lastEventAt).toLocaleString()}` : 'No router activity recorded yet'}
+              >
                 <Circle size={5} fill="currentColor" />
-                {agent.status}
+                {activity.status === 'no-worker' ? 'no worker' : activity.status}
               </span>
             </div>
             <div className="text-[13px] mb-1" style={{ color: 'var(--text-2)' }}>{agent.role}</div>

@@ -198,6 +198,73 @@ export function auditToAgentStats(audit: ApiAuditEvent[] | null | undefined): Re
   return stats
 }
 
+// Matches README "Current implemented runtime workers" vs "Registered but
+// not implemented" -- Sales and Finance are registered with the router so
+// they can be selected and messaged, but run_agents.py has no worker
+// process for them, so nothing ever consumes what's sent. Kept here (not
+// just on the agent detail page) because the sidebar's status dot needs
+// the same distinction.
+const LIVE_WORKER_AGENT_IDS = new Set<AgentId>(['ceo', 'product', 'engineering', 'hr', 'marketing'])
+
+// An ack/nack/fetch in the last 90s reads as "working right now" rather
+// than "idle" -- long enough to survive normal polling gaps, short enough
+// that it doesn't call a two-hour-old event "busy".
+const BUSY_WINDOW_MS = 90_000
+
+export type AgentActivityStatus = 'working' | 'idle' | 'no-worker'
+
+export type AgentActivity = {
+  status: AgentActivityStatus
+  lastEventAt: string | null
+}
+
+/**
+ * Real per-agent status derived from the router's own audit log, replacing
+ * the hardcoded, never-changing AGENT_STATUS map that used to sit in
+ * Sidebar.tsx (and the equally-static `agent.status` field on mock-data.ts
+ * records shown as the big pill at the top of each agent page) -- neither
+ * ever reflected whether that agent's worker process had done anything
+ * recently, or existed at all for Sales/Finance.
+ *
+ * This can't fully distinguish "idle, worker is fine, just nothing to do"
+ * from "worker process crashed" -- the router has no heartbeat concept,
+ * only a record of messages actually sent/acked/nacked. "idle" means
+ * exactly that: no recent audit activity, not a claim the process is up.
+ */
+export function auditToAgentActivity(
+  audit: ApiAuditEvent[] | null | undefined,
+  now: number = Date.now(),
+): Record<AgentId, AgentActivity> {
+  const lastEventAt: Record<AgentId, string | null> = Object.fromEntries(
+    ALL_AGENT_IDS.map(id => [id, null]),
+  ) as Record<AgentId, string | null>
+
+  for (const event of audit ?? []) {
+    const sender = detailString(event, 'sender')
+    const recipient = detailString(event, 'recipient')
+    for (const name of [sender, recipient]) {
+      if (!name) continue
+      const id = ROUTER_NAME_TO_AGENT_ID[name]
+      if (!id) continue
+      if (!lastEventAt[id] || event.created_at > (lastEventAt[id] as string)) {
+        lastEventAt[id] = event.created_at
+      }
+    }
+  }
+
+  const result = {} as Record<AgentId, AgentActivity>
+  for (const id of ALL_AGENT_IDS) {
+    if (!LIVE_WORKER_AGENT_IDS.has(id)) {
+      result[id] = { status: 'no-worker', lastEventAt: lastEventAt[id] }
+      continue
+    }
+    const at = lastEventAt[id]
+    const recent = at ? now - new Date(at).getTime() < BUSY_WINDOW_MS : false
+    result[id] = { status: recent ? 'working' : 'idle', lastEventAt: at }
+  }
+  return result
+}
+
 /**
  * Real inter-agent message counts from message_submitted audit events,
  * replacing the fabricated mock-data.ts MESSAGE_FLOW table.

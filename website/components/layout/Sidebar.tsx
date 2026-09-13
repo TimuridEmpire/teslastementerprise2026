@@ -11,7 +11,8 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AGENTS } from '@/lib/mock-data'
-import { useHealth } from '@/lib/hooks'
+import { useHealth, useAudit } from '@/lib/hooks'
+import { auditToAgentActivity } from '@/lib/live-metrics'
 import type { AgentId } from '@/lib/types'
 
 const AGENT_ICONS: Record<AgentId, React.ReactNode> = {
@@ -34,22 +35,19 @@ const AGENT_COLOR: Record<AgentId, string> = {
   finance:     'var(--agent-finance)',
 }
 
+// "working" = an audit event named this agent as sender or recipient in
+// the last 90s. "idle" = a real worker exists but nothing recent. "no
+// worker" = registered with the router (selectable, messageable) but
+// run_agents.py has no process for it -- see auditToAgentActivity().
 const STATUS_COLOR: Record<string, string> = {
-  active:  'var(--green)',
-  busy:    'var(--amber)',
-  idle:    'var(--sky)',
-  error:   'var(--red)',
-  offline: 'var(--text-3)',
+  working:    'var(--green)',
+  idle:       'var(--sky)',
+  'no-worker': 'var(--text-3)',
 }
-
-const AGENT_STATUS: Record<AgentId, string> = {
-  ceo:         'active',
-  product:     'busy',
-  engineering: 'busy',
-  hr:          'idle',
-  sales:       'active',
-  marketing:   'active',
-  finance:     'idle',
+const STATUS_LABEL: Record<string, string> = {
+  working:    'working',
+  idle:       'idle',
+  'no-worker': 'no worker',
 }
 
 const CORE_NAV = [
@@ -71,6 +69,8 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
   const router   = useRouter()
   const [agentsOpen, setAgentsOpen] = useState(true)
   const { data: health } = useHealth()
+  const { data: audit } = useAudit(150)
+  const activity = auditToAgentActivity(audit)
 
   const isSettings = pathname === '/settings'
 
@@ -187,7 +187,7 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
               {AGENTS.map(agent => {
                 const active = pathname === `/agents/${agent.id}`
                 const color  = AGENT_COLOR[agent.id as AgentId]
-                const status = AGENT_STATUS[agent.id as AgentId] ?? agent.status
+                const status = activity[agent.id as AgentId]?.status ?? 'idle'
                 return (
                   <Link
                     key={agent.id}
@@ -197,8 +197,9 @@ function SidebarContent({ onClose }: { onClose?: () => void }) {
                   >
                     <span style={{ color: active ? 'var(--text-2)' : 'var(--text-3)' }}>{AGENT_ICONS[agent.id as AgentId]}</span>
                     <span className="flex-1">{agent.name}</span>
-                    <span style={{ fontSize: 10, color: STATUS_COLOR[status] ?? 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-                      {status}
+                    <span className="flex items-center gap-1.5" style={{ fontSize: 10, color: STATUS_COLOR[status] ?? 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+                      {status === 'working' && <span className="live-dot" style={{ width: 5, height: 5 }} />}
+                      {STATUS_LABEL[status] ?? status}
                     </span>
                   </Link>
                 )

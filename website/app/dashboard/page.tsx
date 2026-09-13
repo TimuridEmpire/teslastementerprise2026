@@ -14,7 +14,7 @@ import {
 } from 'recharts'
 import { AGENTS, TASK_THROUGHPUT } from '@/lib/mock-data'
 import { useHealth, useAudit, useQueue, useArtifacts } from '@/lib/hooks'
-import { auditToThroughput, auditToAgentStats, auditToMessageFlow, type AgentStat } from '@/lib/live-metrics'
+import { auditToThroughput, auditToAgentStats, auditToMessageFlow, auditToAgentActivity, type AgentStat } from '@/lib/live-metrics'
 import { downloadArtifactsReportPdf, getLastReportGeneratedAt } from '@/lib/memory'
 import type { AgentId } from '@/lib/types'
 import type { ApiArtifact, ApiAuditEvent, ApiQueueItem } from '@/lib/api-types'
@@ -150,6 +150,7 @@ function LatestWorkPanel({ artifacts }: { artifacts: ApiArtifact[] | null }) {
 
 function PulseTab({ liveAudit, liveQueue, liveArtifacts }: { liveAudit: ApiAuditEvent[] | null; liveQueue: ApiQueueItem[] | null; liveArtifacts: ApiArtifact[] | null }) {
   const stats = auditToAgentStats(liveAudit)
+  const activity = auditToAgentActivity(liveAudit)
   const totalMessages = Object.values(stats).reduce((sum, s) => sum + s.messages, 0)
   const maxMessages = Math.max(1, ...Object.values(stats).map(s => s.messages))
 
@@ -201,13 +202,22 @@ function PulseTab({ liveAudit, liveQueue, liveArtifacts }: { liveAudit: ApiAudit
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {AGENTS.map(agent => {
               const s = stats[agent.id]
+              const a = activity[agent.id]
               const pct = Math.round((s.messages / maxMessages) * 100)
+              const dotColor = a.status === 'working' ? 'var(--green)' : a.status === 'no-worker' ? 'var(--text-3)' : 'var(--sky)'
               return (
                 <div key={agent.id} style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                   <div className="agent-glyph" style={{ width: 28, height: 28, borderRadius: 7, background: `${agent.color}1c`, border: `1px solid ${agent.color}33` }}>
                     <span style={{ color: agent.color }}>{AGENT_ICONS[agent.id]}</span>
                   </div>
-                  <span style={{ width: 90, fontSize: 12.5, color: 'var(--text-1)', fontWeight: 500 }}>{agent.name}</span>
+                  <span
+                    className="flex items-center gap-1.5"
+                    style={{ width: 90, fontSize: 12.5, color: 'var(--text-1)', fontWeight: 500 }}
+                    title={a.status === 'no-worker' ? 'Registered with the router, but no worker process exists for this agent' : a.status === 'working' ? 'Active in the router audit log within the last 90s' : 'No recent router activity'}
+                  >
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: dotColor, flexShrink: 0 }} />
+                    {agent.name}
+                  </span>
                   <div className="progress" style={{ flex: 1, height: 5 }}>
                     <div className="progress-fill" style={{ width: `${pct}%`, background: agent.color }} />
                   </div>
