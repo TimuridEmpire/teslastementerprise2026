@@ -1,0 +1,28 @@
+# Python
+.venv*/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+*.pyc
+
+# Node / website (built inside website/Dockerfile instead)
+website/node_modules/
+website/.next/
+
+# Local runtime state -- never something a fresh container should inherit
+enterprise_backlog.db
+enterprise_message_bus.jsonl
+enterprise_router.db
+enterprise_router_demo.db
+vector_store.db
+.ollama_call.lock
+data/
+artifacts/
+eng_agent_testing/
+
+# VCS / editor
+.git/
+.gitignore
+*.md
+!README.md
