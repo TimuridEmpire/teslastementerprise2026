@@ -409,8 +409,12 @@ def create_app(settings: RouterSettings | None = None):
             raise HTTPException(status_code=404, detail="Artifact not found.")
         try:
             return get_build_runner_manager().start(artifact_id, artifact.get("content", ""))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
 
     @app.post("/builds/{artifact_id}/stop")
     def stop_build(artifact_id: str, _: None = Depends(require_admin)) -> dict[str, Any]:

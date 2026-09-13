@@ -1,7 +1,7 @@
 """Generic reflection-based HTTP host for an Engineering build's generated
-code. Run as its own subprocess (not imported into the router process) so a
-crash, infinite loop, or unexpected exit in generated code can't take the
-router down with it.
+code. Runs as its own process, launched by build_runner.py -- never
+imported into the router process -- so a crash, infinite loop, or
+unexpected exit in generated code can't take the router down with it.
 
 Usage: python3 generic_app_runner.py <workdir> <port>
 
@@ -10,10 +10,14 @@ imports each non-test .py file, finds the class that looks like "the app",
 instantiates it, and exposes its public methods over HTTP so they can be
 called from a form without any per-build custom wiring.
 
-This deliberately runs generated code with the same permissions as the
-process invoking it -- no sandboxing beyond binding to localhost only and
-process isolation from the router. That tradeoff was an explicit choice
-(Engineering's output is unreviewed LLM-generated code), not an oversight.
+This script itself has no sandboxing logic -- it's ordinary Python that
+trusts its filesystem and network the way any script does. The isolation
+comes entirely from build_runner.py running it inside a locked-down,
+network-restricted Docker container (network-isolated, read-only root
+filesystem, non-root user, capabilities dropped, memory/cpu/pids capped)
+rather than as a bare subprocess with the router's own OS permissions. See
+build_runner.py's module docstring for why, and its docker_run_cmd() for
+exactly what's applied.
 """
 from __future__ import annotations
 

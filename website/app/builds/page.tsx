@@ -108,10 +108,13 @@ export default function BuildsPage() {
         className="card p-3 mb-5 text-[11px] leading-relaxed"
         style={{ background: 'rgba(251,191,36,0.05)', border: '1px solid rgba(251,191,36,0.2)', color: 'var(--text-2)' }}
       >
-        <strong style={{ color: 'var(--amber)' }}>Run</strong> executes this build&apos;s generated code, unreviewed,
-        as a real local process on this machine (a small auto-reflection server calls whatever class/methods
-        Engineering wrote). It is not sandboxed beyond running as its own subprocess bound to localhost.
-        Only run builds you trust.
+        <strong style={{ color: 'var(--amber)' }}>Run</strong> executes this build&apos;s generated code, unreviewed
+        (a small auto-reflection server calls whatever class/methods Engineering wrote). It&apos;s off by default
+        and requires an operator to explicitly enable it server-side
+        (<code style={{ fontFamily: 'var(--font-mono)' }}>ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING=1</code>) with Docker
+        available &mdash; when enabled, each run is a network-isolated, resource-capped container, not a bare
+        process. If it&apos;s disabled or Docker isn&apos;t available, Run will say so rather than falling back to
+        running unsandboxed.
       </div>
 
       <div className="grid gap-5" style={{ gridTemplateColumns: 'minmax(280px, 340px) 1fr' }}>

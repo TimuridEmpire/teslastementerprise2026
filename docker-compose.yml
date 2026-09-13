@@ -33,8 +33,29 @@ services:
       ENTERPRISE_ROUTER_DB: /data/enterprise_router.db
       ENTERPRISE_ROUTER_ADMIN_SECRET: ${ENTERPRISE_ROUTER_ADMIN_SECRET}
       ENTERPRISE_ROUTER_SHARED_SECRET: ${ENTERPRISE_ROUTER_SHARED_SECRET}
+      # Off by default -- see build_runner.py. Setting this to 1 here also
+      # requires the docker.sock mount below to actually be usable.
+      ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING: ${ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING:-}
     volumes:
       - router-data:/data
+      # Lets build_runner.py's `docker` CLI calls (see its module docstring)
+      # reach the *host's* Docker daemon to sandbox a build's generated
+      # code -- required only if ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING=1.
+      #
+      # Stated plainly, not glossed over: mounting the host's Docker socket
+      # into a container is a well-known trade -- anything that can reach
+      # that socket can ask the host daemon to run an arbitrary container
+      # with arbitrary mounts, which is effectively root on the host. This
+      # narrows the blast radius of one problem (unreviewed generated code
+      # running with the router's permissions) by introducing a different,
+      # bigger one (the router process's own permissions now reach the
+      # host, not just its own container) if the router itself is ever
+      # compromised. Leave ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING unset
+      # (and drop this mount) unless the Run feature is actually wanted;
+      # a rootless Docker daemon or a dedicated sandboxing host reachable
+      # over TCP (DOCKER_HOST) instead of this socket are both stronger
+      # options a real deployment should evaluate before enabling this.
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
     healthcheck:

@@ -36,7 +36,16 @@ async function request<T>(
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`${method} ${path} → ${res.status}: ${text}`)
+    // FastAPI's HTTPException bodies are {"detail": "..."} -- surface that
+    // message directly instead of the raw JSON blob wherever present.
+    let detail = text
+    try {
+      const parsed = JSON.parse(text)
+      if (parsed && typeof parsed.detail === 'string') detail = parsed.detail
+    } catch {
+      // not JSON — use the raw text as-is
+    }
+    throw new Error(detail || `${method} ${path} → ${res.status}`)
   }
   const text = await res.text()
   return text ? JSON.parse(text) : ({} as T)

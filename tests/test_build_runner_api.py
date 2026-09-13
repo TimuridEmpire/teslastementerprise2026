@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import time
-
-import requests
 from fastapi.testclient import TestClient
 
+import enterprise_router.build_runner as build_runner
 from enterprise_router.agent_artifacts import write_agent_artifact
 from enterprise_router.api import create_app
 from enterprise_router.config import RouterSettings
@@ -35,46 +33,42 @@ _EMBEDDED_SOURCE_BODY = (
 )
 
 
-def test_builds_run_hosts_generated_code_and_stop_tears_it_down(tmp_path, monkeypatch):
-    """End-to-end: an artifact with embedded generated source, when run,
-    actually spins up a live process that calls the real generated method --
-    and stop actually tears it back down. This is the "host generated apps"
-    feature the control plane's Builds page exposes as a Run/Stop button."""
+def test_builds_run_refuses_by_default_hosting_disabled(tmp_path, monkeypatch):
+    """Fail-closed by default at the API layer too: a fresh install must not
+    expose code execution until an operator explicitly opts in."""
+    monkeypatch.delenv("ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING", raising=False)
     client, admin = _client(tmp_path, monkeypatch)
     artifact = write_agent_artifact(
         "Engineering", title="Engineering Feature Implementation",
         artifact_type="engineering", body=_EMBEDDED_SOURCE_BODY,
     )
-    artifact_id = artifact["artifact_id"]
 
-    try:
-        run_response = client.post(f"/builds/{artifact_id}/run", headers={"X-Admin-Secret": admin})
-        assert run_response.status_code == 200, run_response.text
-        run = run_response.json()
-        assert run["running"] is True
-        assert run["class_name"] == "Greeter"
-        assert run["init_error"] is None
+    response = client.post(f"/builds/{artifact['artifact_id']}/run", headers={"X-Admin-Secret": admin})
 
-        call = requests.post(f"{run['url']}/call/greet", json={"args": ["World"]}, timeout=5)
-        assert call.json() == {"result": "Hello, World!"}
+    assert response.status_code == 403
+    assert "disabled by policy" in response.json()["detail"]
 
-        listing = client.get("/builds/running", headers={"X-Admin-Secret": admin})
-        assert any(r["artifact_id"] == artifact_id for r in listing.json())
 
-        stop_response = client.post(f"/builds/{artifact_id}/stop", headers={"X-Admin-Secret": admin})
-        assert stop_response.json() == {"stopped": True}
+def test_builds_run_refuses_without_docker_even_when_enabled(tmp_path, monkeypatch):
+    """Real behavior in this environment (no Docker installed here), not
+    mocked: enabling the policy flag alone must not be enough to run
+    unsandboxed code -- Docker has to actually be present."""
+    monkeypatch.setenv("ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING", "1")
+    client, admin = _client(tmp_path, monkeypatch)
+    artifact = write_agent_artifact(
+        "Engineering", title="Engineering Feature Implementation",
+        artifact_type="engineering", body=_EMBEDDED_SOURCE_BODY,
+    )
 
-        time.sleep(0.3)
-        try:
-            requests.get(run["url"], timeout=2)
-            assert False, "expected the hosted process to be torn down after stop"
-        except requests.exceptions.ConnectionError:
-            pass
-    finally:
-        client.post(f"/builds/{artifact_id}/stop", headers={"X-Admin-Secret": admin})
+    response = client.post(f"/builds/{artifact['artifact_id']}/run", headers={"X-Admin-Secret": admin})
+
+    assert response.status_code == 503
+    assert "Docker was not found" in response.json()["detail"]
 
 
 def test_builds_run_without_embedded_source_returns_400(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENTERPRISE_ROUTER_ENABLE_BUILD_HOSTING", "1")
+    monkeypatch.setattr(build_runner, "docker_available", lambda: True)
     client, admin = _client(tmp_path, monkeypatch)
     artifact = write_agent_artifact(
         "Engineering", title="Engineering Feature Implementation",
