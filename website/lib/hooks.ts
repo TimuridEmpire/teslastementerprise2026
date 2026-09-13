@@ -66,16 +66,18 @@ export function useRegistrations(status?: string) {
 }
 
 /**
- * GET /queue/{recipient} — every 4 s (active agent queue view).
- * Skips fetching when apiKey is empty (API offline / not yet configured).
+ * GET /queue/{recipient} — every 4 s (active agent queue view). Auth is
+ * resolved server-side by the /api/router proxy from `recipient` alone
+ * (see app/api/router/[...path]/route.ts) — the browser never holds or
+ * passes a credential.
  */
-export function useQueue(recipient: string, apiKey: string) {
-  const enabled = Boolean(recipient && apiKey)
+export function useQueue(recipient: string) {
+  const enabled = Boolean(recipient)
   const fetcher = useCallback(
     () => enabled
-      ? api.queue.list(recipient, apiKey)
+      ? api.queue.list(recipient)
       : Promise.resolve(null),
-    [recipient, apiKey, enabled]
+    [recipient, enabled]
   )
   return { ...usePolling<ApiQueueItem[] | null>(fetcher, 4_000), enabled }
 }

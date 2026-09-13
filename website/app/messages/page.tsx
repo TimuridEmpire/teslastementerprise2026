@@ -22,7 +22,7 @@ export default function MessagesPage() {
   const [copied, setCopied]           = useState(false)
 
   // Live MANAGER queue (gracefully empty when API key not set)
-  const { data: liveQueue, enabled: queueEnabled, error: queueError } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  const { data: liveQueue, enabled: queueEnabled, error: queueError } = useQueue('MANAGER')
   const hasRouterData = liveQueue !== null
 
   const messages = hasRouterData

@@ -1,23 +1,24 @@
 /**
  * enterprise_router API client.
- * All calls go through FastAPI — never directly to the database.
- * See UI-Team.md §5 and §8 for endpoint contracts.
+ *
+ * Every call goes through this site's own /api/router/* proxy (see
+ * app/api/router/[...path]/route.ts), never directly to the router. The
+ * browser never holds a real credential -- it only sends a role hint
+ * ("admin", "manager", "agent:<Name>") via the X-Router-Auth header, and
+ * the server-side proxy resolves the actual secret from its own
+ * server-only env vars. This used to call the router directly with
+ * NEXT_PUBLIC_ADMIN_SECRET / NEXT_PUBLIC_*_API_KEY, which shipped every one
+ * of those credentials to the browser in plaintext (Next.js inlines
+ * NEXT_PUBLIC_* into the client bundle at build time) -- see the
+ * Enterprise Deployment Blueprint's critical-path findings.
  */
 import type {
   ApiAgent, ApiRegistration, ApiQueueItem, ApiAuditEvent,
   ApiHealth, ApiInterventionBody, ApiEnvelope, ApiQueueItemWire,
   DeliveryState, MessageStatus, ApiArtifact, ApiBuildRun,
 } from './api-types'
-import { getCachedAdminSecret, getCachedManagerKey } from './memory'
 
-const BASE             = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
-const ADMIN_SECRET_ENV = process.env.NEXT_PUBLIC_ADMIN_SECRET ?? ''
-const MANAGER_KEY_ENV  = process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? ''
-
-// A value saved via the Settings page (memory.ts, encrypted cookie) takes
-// precedence over the build-time env var once loaded into the cache.
-const resolveAdminSecret = () => getCachedAdminSecret() ?? ADMIN_SECRET_ENV
-const resolveManagerKey  = () => getCachedManagerKey() ?? MANAGER_KEY_ENV
+const BASE = '/api/router'
 
 // ─── Low-level helpers ────────────────────────────────────────────────────────
 
@@ -124,15 +125,16 @@ function normalizeQueueItems(raw: unknown): ApiQueueItem[] {
     : []
 }
 
-// Auth header factories
+// Auth "role hint" headers — not secrets, just tell the server-side proxy
+// which server-held credential to attach. See app/api/router/[...path]/route.ts.
 function adminH(): Record<string,string> {
-  return { 'X-Admin-Secret': resolveAdminSecret() }
+  return { 'X-Router-Auth': 'admin' }
 }
-function agentH(agentName: string, apiKey: string): Record<string,string> {
-  return { Authorization: `Bearer ${apiKey}`, 'X-Agent-Id': agentName }
+function agentH(agentName: string): Record<string,string> {
+  return { 'X-Router-Auth': `agent:${agentName}` }
 }
 function managerH(): Record<string,string> {
-  return agentH('MANAGER', resolveManagerKey())
+  return { 'X-Router-Auth': 'manager' }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -144,8 +146,8 @@ export const api = {
 
   agents: {
     // GET /agents  (agent auth — uses MANAGER key when called from dashboard)
-    list: (agentName = 'MANAGER', apiKey = resolveManagerKey(), status?: string) =>
-      get<ApiAgent[]>(status ? `/agents?status=${status}` : '/agents', agentH(agentName, apiKey)),
+    list: (agentName = 'MANAGER', status?: string) =>
+      get<ApiAgent[]>(status ? `/agents?status=${status}` : '/agents', agentH(agentName)),
 
     // POST /agents  (admin)
     register: (body: {
@@ -200,43 +202,42 @@ export const api = {
       envelope: Omit<ApiEnvelope, 'error'> & { error?: string },
       routingHints: Record<string,unknown>,
       agentName: string,
-      apiKey: string,
     ) => post<{ message_id: string }>(
       '/messages',
       { message: { ...envelope, error: envelope.error ?? '' }, routing_hints: routingHints },
-      agentH(agentName, apiKey)
+      agentH(agentName)
     ),
 
     // GET /messages/peek  (agent auth — agents can only peek own queue)
-    peek: (recipient: string, apiKey: string, limit = 20) =>
+    peek: (recipient: string, limit = 20) =>
       get<unknown>(
         `/messages/peek?recipient=${recipient}&limit=${limit}`,
-        agentH(recipient, apiKey)
+        agentH(recipient)
       ).then(normalizeQueueItems),
 
     // POST /messages/fetch-next  (agent auth)
-    fetchNext: (recipient: string, apiKey: string) =>
+    fetchNext: (recipient: string) =>
       post<unknown>(
-        '/messages/fetch-next', { recipient }, agentH(recipient, apiKey)
+        '/messages/fetch-next', { recipient }, agentH(recipient)
       ).then(raw => normalizeQueueItem(raw) ?? {}),
 
     // POST /messages/{id}/ack  (agent auth)
-    ack: (messageId: string, recipient: string, apiKey: string) =>
+    ack: (messageId: string, recipient: string) =>
       post<{ message_id: string; status: string }>(
-        `/messages/${messageId}/ack`, { recipient }, agentH(recipient, apiKey)
+        `/messages/${messageId}/ack`, { recipient }, agentH(recipient)
       ),
 
     // POST /messages/{id}/nack  (agent auth)
-    nack: (messageId: string, recipient: string, reason: string, apiKey: string) =>
+    nack: (messageId: string, recipient: string, reason: string) =>
       post<{ message_id: string; status: string }>(
-        `/messages/${messageId}/nack`, { recipient, reason }, agentH(recipient, apiKey)
+        `/messages/${messageId}/nack`, { recipient, reason }, agentH(recipient)
       ),
   },
 
   queue: {
     // GET /queue/{recipient}  (agent auth)
-    list: (recipient: string, apiKey: string) =>
-      get<unknown>(`/queue/${recipient}`, agentH(recipient, apiKey)).then(normalizeQueueItems),
+    list: (recipient: string) =>
+      get<unknown>(`/queue/${recipient}`, agentH(recipient)).then(normalizeQueueItems),
   },
 
   manager: {

@@ -5,18 +5,14 @@
  * ── Storage ─────────────────────────────────────────────────────────────
  *  - localStorage: non-sensitive UI/report state (e.g. "when was the report
  *    last generated"). Plain JSON, no encryption — nothing here is a secret.
- *  - cookies: small session-scoped values. Anything sensitive (the admin
- *    secret / manager API key a user pastes into Settings) is AES-GCM
- *    encrypted before being written to the cookie, using a per-browser key
- *    kept in localStorage.
- *
- *    Caveat: this raises the bar above "read it in the cookie devtools
- *    panel" or "another same-origin script grep'ing document.cookie", but
- *    it is NOT a server-side security boundary — the decryption key lives
- *    in localStorage on the same origin, so any script with page access can
- *    still recover it. Real secrets belong in httpOnly server-set cookies;
- *    this is the best available option for a purely static, backend-less
- *    client page that still wants "not plaintext at rest".
+ *  - cookies: small session-scoped, non-sensitive values only. Real
+ *    credentials (router admin secret, agent API keys) are never handled
+ *    client-side at all — they live server-side, resolved by
+ *    app/api/router/[...path]/route.ts from its own env vars. This module
+ *    used to also hold an AES-GCM "encrypted cookie" store for a pasted
+ *    admin secret / manager key; that was never a real security boundary
+ *    (the decryption key lived in localStorage on the same origin) and has
+ *    been removed along with the client-side credential concept itself.
  *
  * ── PDF report ──────────────────────────────────────────────────────────
  *  Pulls every artifact from the enterprise_router `/artifacts` API,
@@ -87,140 +83,16 @@ export function deleteCookie(name: string): void {
   document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`
 }
 
-// ───────────────────────── Encryption (AES-GCM) ────────────────────────────
-
-const DEVICE_KEY_ITEM = 'device-key'
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  bytes.forEach((b) => (binary += String.fromCharCode(b)))
-  return btoa(binary)
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return bytes
-}
-
-// TypeScript's DOM lib types typed-array buffers as `ArrayBufferLike`
-// (which includes `SharedArrayBuffer`) while `BufferSource`-consuming Web
-// Crypto APIs require a concrete `ArrayBuffer`. Every array here is a plain
-// browser-created Uint8Array (never backed by a SharedArrayBuffer), so this
-// narrows the type without changing anything at runtime.
-function asBufferSource(bytes: Uint8Array): BufferSource {
-  return bytes as unknown as BufferSource
-}
-
-async function getOrCreateDeviceKey(): Promise<CryptoKey> {
-  const existing = getLocalItem<string>(DEVICE_KEY_ITEM)
-  if (existing) {
-    return crypto.subtle.importKey('raw', asBufferSource(base64ToBytes(existing)), 'AES-GCM', true, [
-      'encrypt',
-      'decrypt',
-    ])
-  }
-  const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
-    'encrypt',
-    'decrypt',
-  ])
-  const exported = await crypto.subtle.exportKey('raw', key)
-  setLocalItem(DEVICE_KEY_ITEM, bytesToBase64(new Uint8Array(exported)))
-  return key
-}
-
-async function encrypt(plaintext: string): Promise<string> {
-  const key = await getOrCreateDeviceKey()
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: asBufferSource(iv) },
-    key,
-    asBufferSource(new TextEncoder().encode(plaintext)),
-  )
-  const combined = new Uint8Array(iv.length + ciphertext.byteLength)
-  combined.set(iv, 0)
-  combined.set(new Uint8Array(ciphertext), iv.length)
-  return bytesToBase64(combined)
-}
-
-async function decrypt(encoded: string): Promise<string | null> {
-  try {
-    const key = await getOrCreateDeviceKey()
-    const combined = base64ToBytes(encoded)
-    const iv = combined.slice(0, 12)
-    const ciphertext = combined.slice(12)
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: asBufferSource(iv) },
-      key,
-      asBufferSource(ciphertext),
-    )
-    return new TextDecoder().decode(plaintext)
-  } catch {
-    return null
-  }
-}
-
-/** Encrypt `value` and store it in a cookie — use for sensitive values. */
-export async function setSecureCookie(name: string, value: string, days = 7): Promise<void> {
-  setCookie(name, await encrypt(value), days)
-}
-
-/** Read + decrypt a cookie written by {@link setSecureCookie}. */
-export async function getSecureCookie(name: string): Promise<string | null> {
-  const raw = getCookie(name)
-  return raw ? decrypt(raw) : null
-}
-
-// ───────────────── Concrete use: persisted admin credentials ──────────────
-//
-// The Settings page lets a user paste the router admin secret / manager API
-// key. Previously "Save" only flashed a confirmation and never actually
-// persisted anything — a refresh silently reverted to the build-time env
-// var. These helpers make Save real: the values survive reloads (encrypted
-// at rest in a cookie) and `api.ts` consults an in-memory cache seeded from
-// them at startup, falling back to the env var when nothing is saved.
-
-export const ADMIN_SECRET_COOKIE = 'brain_admin_secret'
-export const MANAGER_KEY_COOKIE = 'brain_manager_key'
-
-let cachedAdminSecret: string | null = null
-let cachedManagerKey: string | null = null
-
-export function getCachedAdminSecret(): string | null {
-  return cachedAdminSecret
-}
-
-export function getCachedManagerKey(): string | null {
-  return cachedManagerKey
-}
-
-/** Load any previously-saved credentials into the in-memory cache. Call once on app start. */
-export async function initCredentialsFromCookies(): Promise<void> {
-  const [admin, manager] = await Promise.all([
-    getSecureCookie(ADMIN_SECRET_COOKIE),
-    getSecureCookie(MANAGER_KEY_COOKIE),
-  ])
-  cachedAdminSecret = admin
-  cachedManagerKey = manager
-}
-
-export async function saveAdminSecret(secret: string): Promise<void> {
-  await setSecureCookie(ADMIN_SECRET_COOKIE, secret)
-  cachedAdminSecret = secret
-}
-
-export async function saveManagerKey(key: string): Promise<void> {
-  await setSecureCookie(MANAGER_KEY_COOKIE, key)
-  cachedManagerKey = key
-}
-
-export function clearSavedCredentials(): void {
-  deleteCookie(ADMIN_SECRET_COOKIE)
-  deleteCookie(MANAGER_KEY_COOKIE)
-  cachedAdminSecret = null
-  cachedManagerKey = null
-}
+// Client-side credential storage (a Settings page that let a user paste
+// the router admin secret / manager API key, AES-GCM "encrypted" into a
+// cookie) used to live here. Removed: those credentials now live
+// server-side only, resolved by app/api/router/[...path]/route.ts from its
+// own env vars — there is no client-side secret left to store. See the
+// Enterprise Deployment Blueprint's critical-path findings on why that
+// mattered (NEXT_PUBLIC_* env vars are inlined into the client JS bundle
+// at build time, so anything read from one ships to the browser in
+// plaintext regardless of any cookie encryption layered on top of it
+// afterward).
 
 // ───────────────────────── PDF report assembly ─────────────────────────────
 

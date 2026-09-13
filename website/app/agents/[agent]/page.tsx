@@ -51,16 +51,6 @@ const ROUTER_AGENT_BY_UI_ID: Record<string, string> = {
   finance: 'Finance',
 }
 
-const ROUTER_AGENT_KEYS: Record<string, string> = {
-  CEO: process.env.NEXT_PUBLIC_CEO_API_KEY ?? '',
-  PM: process.env.NEXT_PUBLIC_PM_API_KEY ?? process.env.NEXT_PUBLIC_PRODUCT_API_KEY ?? '',
-  Engineering: process.env.NEXT_PUBLIC_ENGINEERING_API_KEY ?? '',
-  HR: process.env.NEXT_PUBLIC_HR_API_KEY ?? '',
-  Sales: process.env.NEXT_PUBLIC_SALES_API_KEY ?? '',
-  Marketing: process.env.NEXT_PUBLIC_MARKETING_API_KEY ?? '',
-  Finance: process.env.NEXT_PUBLIC_FINANCE_API_KEY ?? '',
-}
-
 export default function AgentPage({ params }: { params: { agent: string } }) {
   const { agent: agentId } = params
   const agent = AGENTS.find(a => a.id === agentId)
@@ -69,7 +59,6 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
   const color = AGENT_COLORS[agent.id as AgentId]
   const isLiveWorker = LIVE_WORKER_AGENT_IDS.has(agent.id as AgentId)
   const routerRecipient = ROUTER_AGENT_BY_UI_ID[agent.id] ?? agent.name
-  const routerApiKey = ROUTER_AGENT_KEYS[routerRecipient] ?? ''
 
   const [instruction, setInstruction] = useState('')
   const [sending, setSending]         = useState(false)
@@ -77,7 +66,7 @@ export default function AgentPage({ params }: { params: { agent: string } }) {
   const [sendError, setSendError]     = useState('')
 
   // Live queue; skips fetching when this agent has no configured key.
-  const { data: queue, enabled: queueEnabled, error: queueError } = useQueue(routerRecipient, routerApiKey)
+  const { data: queue, enabled: queueEnabled, error: queueError } = useQueue(routerRecipient)
   const { data: artifacts, error: artifactError } = useArtifacts(routerRecipient, 10)
   const { data: audit } = useAudit(200)
   const hasRouterQueue = queue !== null

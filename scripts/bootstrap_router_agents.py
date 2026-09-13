@@ -31,16 +31,23 @@ AGENTS = [
     ("Strategic Advisor", "advisor", 85, 85, ["STRATEGY_REVIEW_REQUEST", "CEO_PROPOSAL_FOR_REVIEW", "MANAGER_INTERVENTION"]),
 ]
 
-WEBSITE_ENV_NAMES = {
-    "CEO": "NEXT_PUBLIC_CEO_API_KEY",
-    "PM": "NEXT_PUBLIC_PM_API_KEY",
-    "Marketing": "NEXT_PUBLIC_MARKETING_API_KEY",
-    "HR": "NEXT_PUBLIC_HR_API_KEY",
-    "Engineering": "NEXT_PUBLIC_ENGINEERING_API_KEY",
-    "Sales": "NEXT_PUBLIC_SALES_API_KEY",
-    "Finance": "NEXT_PUBLIC_FINANCE_API_KEY",
-    "MANAGER": "NEXT_PUBLIC_MANAGER_API_KEY",
-    "Strategic Advisor": "NEXT_PUBLIC_ADVISOR_API_KEY",
+# One distinct env var name per agent's issued key. Consumed by:
+#  - website/app/api/router/[...path]/route.ts (the server-side proxy that
+#    holds every credential -- see the Enterprise Deployment Blueprint's
+#    critical-path finding on why these must NOT be NEXT_PUBLIC_* anymore)
+#  - docker-compose.yml's worker-* services (remapped to the single generic
+#    ENTERPRISE_AGENT_API_KEY each run_single_agent.py process reads)
+#  - setup_local_runtime.py's generated key files
+AGENT_ENV_NAMES = {
+    "CEO": "CEO_AGENT_API_KEY",
+    "PM": "PM_AGENT_API_KEY",
+    "Marketing": "MARKETING_AGENT_API_KEY",
+    "HR": "HR_AGENT_API_KEY",
+    "Engineering": "ENGINEERING_AGENT_API_KEY",
+    "Sales": "SALES_AGENT_API_KEY",
+    "Finance": "FINANCE_AGENT_API_KEY",
+    "MANAGER": "MANAGER_AGENT_API_KEY",
+    "Strategic Advisor": "ADVISOR_AGENT_API_KEY",
 }
 
 
@@ -76,10 +83,15 @@ def main() -> int:
             issued_keys[name] = key
         print(f"{name}: registered" + (f", api_key={key}" if key else ""))
 
-    print("\nWebsite .env.local values:")
-    print(f"NEXT_PUBLIC_API_URL={base}")
+    # Website server env values -- these belong in the website process's own
+    # environment (or a Docker Compose .env), never NEXT_PUBLIC_*: the
+    # server-side proxy at app/api/router/[...path]/route.ts is the only
+    # thing that reads them, and the browser never sees them.
+    print("\nWebsite server env values (website process env, or repo-root .env for Docker Compose):")
+    print(f"ROUTER_URL={base}")
+    print("ENTERPRISE_ROUTER_ADMIN_SECRET=<already set -- same value used to run this script>")
     for name, key in issued_keys.items():
-        env_name = WEBSITE_ENV_NAMES.get(name)
+        env_name = AGENT_ENV_NAMES.get(name)
         if env_name:
             print(f"{env_name}={key}")
 

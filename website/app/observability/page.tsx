@@ -37,7 +37,7 @@ export default function ObservabilityPage() {
   const [tab, setTab] = useState<Tab>('Overview')
   const { data: health, loading: healthLoading } = useHealth()
   const { data: audit,  loading: auditLoading  } = useAudit(50)
-  const { data: managerQueue } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  const { data: managerQueue } = useQueue('MANAGER')
   const liveThroughput = auditToThroughput(audit, 12)
   const throughputData = liveThroughput.length ? liveThroughput : fallbackThroughputData
   const throughputLive = liveThroughput.length > 0

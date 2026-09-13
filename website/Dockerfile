@@ -1,32 +1,13 @@
-# Next.js inlines every NEXT_PUBLIC_* value into the client JS bundle at
-# `next build` time -- setting them as container *runtime* env vars (e.g.
-# only in docker-compose.yml's `environment:`) has no effect on what the
-# browser actually receives. They have to be passed as build ARGs instead,
-# which is why docker-compose.yml's website service uses `build.args` for
-# these rather than `environment`.
+# No credential build ARGs here. They used to be required (Next.js inlines
+# NEXT_PUBLIC_* into the client JS bundle at `next build` time, which is
+# how the admin secret and every agent's API key ended up shipping to the
+# browser in plaintext) -- fixed by moving router-authenticated calls
+# through a server-side proxy (app/api/router/[...path]/route.ts) that
+# reads real credentials from its own runtime env vars instead. See
+# docker-compose.yml's website service for those (`environment:`, not
+# `build.args`) and the Enterprise Deployment Blueprint for the finding.
 FROM node:20-slim AS builder
 WORKDIR /app
-
-ARG NEXT_PUBLIC_API_URL
-# WARNING: NEXT_PUBLIC_* is Next.js's contract for "safe to ship to the
-# browser" -- but ADMIN_SECRET and every per-agent API key below are
-# genuine router credentials, not public config, and this bakes all of
-# them into the client JS bundle in plaintext (visible via view-source to
-# anyone who loads the site). That's an existing gap, not something this
-# Dockerfile introduces -- see the Enterprise Deployment Blueprint's
-# "Multi-user identity & RBAC" section. Closing it means routing
-# admin/agent-authenticated calls through a server-side Next.js API route
-# instead of calling the router directly from client components.
-ARG NEXT_PUBLIC_ADMIN_SECRET
-ARG NEXT_PUBLIC_MANAGER_API_KEY
-ARG NEXT_PUBLIC_CEO_API_KEY
-ARG NEXT_PUBLIC_PM_API_KEY
-ARG NEXT_PUBLIC_PRODUCT_API_KEY
-ARG NEXT_PUBLIC_ENGINEERING_API_KEY
-ARG NEXT_PUBLIC_HR_API_KEY
-ARG NEXT_PUBLIC_SALES_API_KEY
-ARG NEXT_PUBLIC_MARKETING_API_KEY
-ARG NEXT_PUBLIC_FINANCE_API_KEY
 
 COPY package.json package-lock.json* ./
 RUN npm ci

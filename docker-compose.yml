@@ -2,15 +2,18 @@
 #
 # NOT a full turnkey `docker compose up` yet -- agent API keys are issued
 # dynamically by the router (see scripts/bootstrap_router_agents.py) and
-# have to exist before the website is built and before worker containers
-# can start, which compose alone can't sequence. The install flow is:
+# have to exist before the website and worker containers can authenticate,
+# which compose alone can't sequence. The install flow is:
 #
 #   1. Copy .env.example to .env and fill in ADMIN/SHARED secrets (and
 #      OLLAMA_BASE_URL -- see below).
 #   2. docker compose up -d router
 #   3. docker compose run --rm router python scripts/bootstrap_router_agents.py
-#      -- copy the printed keys into .env (one NEXT_PUBLIC_*_API_KEY per
-#      agent, one ENTERPRISE_AGENT_API_KEY per worker service below).
+#      -- copy the printed <NAME>_AGENT_API_KEY values into .env. These are
+#      server-side only (never NEXT_PUBLIC_*): the website's own server
+#      proxy (app/api/router/[...path]/route.ts) reads them at request
+#      time, and each worker-* service below remaps its own key to the
+#      generic ENTERPRISE_AGENT_API_KEY that run_single_agent.py expects.
 #   4. docker compose up -d --build
 #
 # Ollama itself is NOT a service here. Model weights are multi-GB and this
@@ -45,17 +48,24 @@ services:
   website:
     build:
       context: ./website
-      args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
-        NEXT_PUBLIC_ADMIN_SECRET: ${ENTERPRISE_ROUTER_ADMIN_SECRET}
-        NEXT_PUBLIC_MANAGER_API_KEY: ${MANAGER_AGENT_API_KEY}
-        NEXT_PUBLIC_CEO_API_KEY: ${CEO_AGENT_API_KEY}
-        NEXT_PUBLIC_PM_API_KEY: ${PM_AGENT_API_KEY}
-        NEXT_PUBLIC_ENGINEERING_API_KEY: ${ENGINEERING_AGENT_API_KEY}
-        NEXT_PUBLIC_HR_API_KEY: ${HR_AGENT_API_KEY}
-        NEXT_PUBLIC_SALES_API_KEY: ${SALES_AGENT_API_KEY}
-        NEXT_PUBLIC_MARKETING_API_KEY: ${MARKETING_AGENT_API_KEY}
-        NEXT_PUBLIC_FINANCE_API_KEY: ${FINANCE_AGENT_API_KEY}
+      # No build args here anymore. Credentials used to be passed as
+      # NEXT_PUBLIC_* build args because Next.js inlines those into the
+      # client JS bundle -- which is exactly how the admin secret and
+      # every agent's API key ended up shipping to the browser in
+      # plaintext. They're server-side runtime env vars now (below),
+      # read only by app/api/router/[...path]/route.ts, so rotating one
+      # no longer requires an image rebuild either.
+    environment:
+      ROUTER_URL: http://router:8000
+      ENTERPRISE_ROUTER_ADMIN_SECRET: ${ENTERPRISE_ROUTER_ADMIN_SECRET}
+      MANAGER_AGENT_API_KEY: ${MANAGER_AGENT_API_KEY}
+      CEO_AGENT_API_KEY: ${CEO_AGENT_API_KEY}
+      PM_AGENT_API_KEY: ${PM_AGENT_API_KEY}
+      ENGINEERING_AGENT_API_KEY: ${ENGINEERING_AGENT_API_KEY}
+      HR_AGENT_API_KEY: ${HR_AGENT_API_KEY}
+      SALES_AGENT_API_KEY: ${SALES_AGENT_API_KEY}
+      MARKETING_AGENT_API_KEY: ${MARKETING_AGENT_API_KEY}
+      FINANCE_AGENT_API_KEY: ${FINANCE_AGENT_API_KEY}
     ports:
       - "3000:3000"
     depends_on:

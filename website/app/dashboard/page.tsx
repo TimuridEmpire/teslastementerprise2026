@@ -570,7 +570,7 @@ export default function DashboardPage() {
   const [tab, setTab] = useState<TabId>('pulse')
   const { data: health } = useHealth()
   const { data: audit  } = useAudit(50)
-  const { data: managerQueue } = useQueue('MANAGER', process.env.NEXT_PUBLIC_MANAGER_API_KEY ?? '')
+  const { data: managerQueue } = useQueue('MANAGER')
   const { data: artifacts } = useArtifacts('', 10)
 
   return (
