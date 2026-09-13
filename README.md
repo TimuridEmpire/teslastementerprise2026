@@ -920,11 +920,16 @@ From the repository root:
 $env:ENTERPRISE_ROUTER_BACKEND="sqlite"
 $env:ENTERPRISE_ROUTER_DB="enterprise_router_demo.db"
 $env:ENTERPRISE_ROUTER_ADMIN_SECRET="dev-admin-secret"
+$env:ENTERPRISE_ROUTER_SHARED_SECRET="dev-shared-secret"
 $env:ENTERPRISE_ROUTER_PORT="8000"
 python -m enterprise_router.api
 ```
 
-The router defaults to SQLite for local development.
+The router defaults to SQLite for local development. `ENTERPRISE_ROUTER_ADMIN_SECRET` and
+`ENTERPRISE_ROUTER_SHARED_SECRET` are both required — the router refuses to start without
+them rather than silently falling back to a shared placeholder value. For a quick local
+throwaway run only, set `ENTERPRISE_ROUTER_ALLOW_DEV_DEFAULTS=1` instead of setting real
+secrets; never set that in anything other than a disposable local environment.
 
 ### 2. Confirm Router Health
 
@@ -1122,10 +1127,12 @@ The test suite covers:
 
 Several agents are designed to use local LLM tooling, especially CEO and Engineering.
 
-CEO uses local Ollama endpoints:
-
-- `http://localhost:11434/api/chat`
-- `http://localhost:11434/api/generate`
+CEO and Engineering both call an Ollama-compatible server at `OLLAMA_BASE_URL`
+(default `http://localhost:11434` if unset — fine when everything runs on one
+machine, but every agent that talks to a model needs this set explicitly to
+something reachable once any of it runs in its own container, since
+"localhost" then means that container's own loopback, not the host or a
+sibling container).
 
 Default CEO model:
 
@@ -1139,7 +1146,7 @@ Default Engineering model env:
 
 Engineering default model value in code:
 
-- `ollama/deepseek-coder-v2:16b`
+- `ollama/deepseek-coder-v2:16b` — this is frequently not actually pulled locally; check `ollama list` and set `OLLAMA_MODEL` to one that is.
 
 If using Docker for Ollama, start Docker Desktop first, then start the Ollama container according to your local environment. A common local command used by this project is:
 
@@ -1155,6 +1162,41 @@ If Ollama is not running:
 - Engineering full mode may not work, depending on CrewAI/Ollama configuration.
 - Engineering light-demo mode can still process router messages and produce artifacts without generating code.
 
+### Running the whole system with Docker Compose
+
+`docker-compose.yml` (repo root) packages the router, the website, and one
+container per department-agent worker (CEO, PM, Marketing, HR, Engineering)
+behind a single Python 3.13 image (`Dockerfile`) — the same interpreter for
+every service, since containerizing removes the reason this project's local
+dev setup needed a separate venv just for Engineering (CrewAI requires
+Python `<3.14`). Ollama itself isn't bundled — point `OLLAMA_BASE_URL` (in
+`.env`) at wherever your Ollama-compatible server actually runs.
+
+Full install flow — not a single `docker compose up`, since agent API keys
+are issued by the router itself and have to exist before the website is
+built and before workers can authenticate:
+
+```bash
+cp .env.example .env
+# Fill in ENTERPRISE_ROUTER_ADMIN_SECRET, ENTERPRISE_ROUTER_SHARED_SECRET,
+# and OLLAMA_BASE_URL in .env, then:
+
+docker compose up -d router
+docker compose run --rm router python scripts/bootstrap_router_agents.py
+# Copy the printed per-agent API keys into the matching *_AGENT_API_KEY
+# lines in .env, then:
+
+docker compose up -d --build
+```
+
+`docker compose logs -f <service>` (e.g. `worker-engineering`) to watch one
+agent; `docker compose ps` to check the router's healthcheck status.
+
+**This bundle has not been build-tested end to end** — it was authored
+without a local Docker install available. Treat it as a strong starting
+point, not a verified one; if `docker compose build` or `up` fails on
+something environment-specific, that's expected on a first real run.
+
 ## Environment Variables
 
 ### Router Runtime
@@ -1165,11 +1207,15 @@ SQLite DB path for router persistence.
 
 `ENTERPRISE_ROUTER_ADMIN_SECRET`
 
-Admin secret for protected router admin endpoints.
+Admin secret for protected router admin endpoints. **Required** — `python -m enterprise_router.api`
+refuses to start without it rather than falling back to a shared placeholder value. Set
+`ENTERPRISE_ROUTER_ALLOW_DEV_DEFAULTS=1` instead, for a disposable local run only, to boot
+with the insecure placeholder and skip setting a real secret.
 
 `ENTERPRISE_ROUTER_SHARED_SECRET`
 
-Registration request shared secret.
+Registration request shared secret. **Required** under the same rule as
+`ENTERPRISE_ROUTER_ADMIN_SECRET` above.
 
 `ENTERPRISE_ROUTER_HOST`
 
