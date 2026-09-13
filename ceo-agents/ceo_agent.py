@@ -54,8 +54,13 @@ class CeoAgent(ThreadSafeAgentMixin):
         # compatibility; override with CEO_OLLAMA_MODEL if that model isn't
         # pulled locally (calls otherwise fail with a 404 and CEO falls back
         # to a "Strategic Link Error" string instead of a real answer).
-        self.ollama_chat_url = "http://localhost:11434/api/chat"
-        self.ollama_generate_url = "http://localhost:11434/api/generate"
+        # Base URL is configurable via OLLAMA_BASE_URL (same var base_agent.py
+        # already reads) -- hardcoding "localhost" here meant CEO could never
+        # reach an Ollama server running anywhere but its own container/host,
+        # which breaks as soon as CEO and Ollama aren't the same machine.
+        ollama_base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.ollama_chat_url = f"{ollama_base_url}/api/chat"
+        self.ollama_generate_url = f"{ollama_base_url}/api/generate"
         self.model_name = os.environ.get("CEO_OLLAMA_MODEL", "mistral")
         self.chat_history: List[Dict[str, str]] = []
         self.metrics: Dict[str, Any] = {

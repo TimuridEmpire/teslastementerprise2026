@@ -49,9 +49,13 @@ except ImportError:
 # Model note: llama3.1 is stable but tool use is unreliable. llama3.2 has better tool-calling
 # support — switch the model string below if you want to try it. llama3 (base) cannot use tools.
 # Local LLM (Ollama) — override with OLLAMA_MODEL env var to switch models without editing code.
+# Base URL is configurable via OLLAMA_BASE_URL (same var base_agent.py reads)
+# -- hardcoding "localhost" here meant Engineering could never reach an
+# Ollama server running anywhere but its own container/host.
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "ollama/deepseek-coder-v2:16b")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 llm = (
-    LLM(model=OLLAMA_MODEL, base_url="http://localhost:11434")
+    LLM(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL)
     if LLM is not None
     else None
 )

@@ -6,6 +6,19 @@ from agents.ceo_agent import CeoAgent
 
 
 class TestCeoCoreUnit(unittest.TestCase):
+    def test_ollama_urls_honor_ollama_base_url_env_override(self):
+        """Regression test: the Ollama chat/generate URLs used to hardcode
+        "http://localhost:11434" directly. Inside a container that's the
+        container's own loopback, not wherever Ollama actually runs -- CEO
+        would silently fail to reach it in any multi-container deployment
+        (e.g. the Docker Compose bundle). base_agent.py already reads
+        OLLAMA_BASE_URL for exactly this reason; ceo_agent.py must too."""
+        with mock.patch.dict("os.environ", {"OLLAMA_BASE_URL": "http://ollama:11434"}):
+            ceo = CeoAgent(name="CEO")
+
+        self.assertEqual(ceo.ollama_chat_url, "http://ollama:11434/api/chat")
+        self.assertEqual(ceo.ollama_generate_url, "http://ollama:11434/api/generate")
+
     def test_ping_envelope_acknowledged(self):
         ceo = CeoAgent(name="CEO")
 

@@ -43,18 +43,6 @@ WEBSITE_ENV_NAMES = {
     "Strategic Advisor": "NEXT_PUBLIC_ADVISOR_API_KEY",
 }
 
-RUNNER_ENV_NAMES = {
-    "CEO": "CEO_AGENT_API_KEY",
-    "PM": "PM_AGENT_API_KEY",
-    "Marketing": "MARKETING_AGENT_API_KEY",
-    "HR": "HR_AGENT_API_KEY",
-    "Engineering": "ENGINEERING_AGENT_API_KEY",
-    "Sales": "SALES_AGENT_API_KEY",
-    "Finance": "FINANCE_AGENT_API_KEY",
-    "MANAGER": "MANAGER_AGENT_API_KEY",
-    "Strategic Advisor": "ADVISOR_AGENT_API_KEY",
-}
-
 
 def main() -> int:
     settings = RouterSettings.from_env()
@@ -95,12 +83,13 @@ def main() -> int:
         if env_name:
             print(f"{env_name}={key}")
 
-    print("\nAgent runner env values:")
+    # run_single_agent.py reads one generic ENTERPRISE_AGENT_API_KEY, not a
+    # per-agent-named var -- set it to whichever agent's key you're
+    # starting that process as.
+    print("\nAgent runner env values (set ENTERPRISE_AGENT_API_KEY per process, to that agent's key):")
     print(f"ENTERPRISE_ROUTER_URL={base}")
     for name, key in issued_keys.items():
-        env_name = RUNNER_ENV_NAMES.get(name)
-        if env_name:
-            print(f"{env_name}={key}")
+        print(f"  {name}: ENTERPRISE_AGENT_API_KEY={key}")
     print("\nThen run: python run_agents.py --agents all")
     return 0
 

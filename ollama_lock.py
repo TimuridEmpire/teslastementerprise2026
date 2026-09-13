@@ -19,9 +19,13 @@ model or reliably finishes loading before the next call starts.
 
 This is a plain filesystem lock (atomic file creation), not a network
 service or a Python-level lock -- it has to work across separate OS
-processes (each department agent is its own process), which is exactly
-this project's local-dev deployment model (single machine, shared repo
-checkout).
+processes (each department agent is its own process). On one machine with
+a shared repo checkout the default path below is fine as-is; running each
+agent in its own container instead means each has its own filesystem, so
+the lock path must point at storage actually shared between them (e.g. one
+Docker volume mounted at the same path in every agent container) or the
+lock silently does nothing and this bug comes back. Override with
+OLLAMA_LOCK_PATH in that case.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import os
 import time
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-_LOCK_PATH = os.path.join(_REPO_ROOT, ".ollama_call.lock")
+_LOCK_PATH = os.environ.get("OLLAMA_LOCK_PATH") or os.path.join(_REPO_ROOT, ".ollama_call.lock")
 
 # Generous on purpose. The longest single thing this project holds the
 # lock for is one CrewAI crew.kickoff() call, which on a slow local model

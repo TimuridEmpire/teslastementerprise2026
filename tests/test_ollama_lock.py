@@ -91,3 +91,24 @@ def test_ollama_call_gives_up_after_max_wait_instead_of_hanging_forever(monkeypa
     # The lock file is untouched (still held by the "other process") since
     # this caller never actually acquired it.
     assert os.path.exists(lock_path)
+
+
+def test_lock_path_honors_ollama_lock_path_env_override(monkeypatch, tmp_path):
+    """Regression test: each agent runs in its own container in the Docker
+    Compose bundle, so the default repo-relative lock path (fine on one
+    shared-filesystem host) points at a different, unshared filesystem per
+    container -- silently defeating the whole mutex and reintroducing the
+    concurrent-Ollama-access crash this module exists to prevent. The lock
+    path must be overridable to a volume actually shared between agent
+    containers."""
+    import importlib
+
+    shared_path = str(tmp_path / "shared" / ".ollama_call.lock")
+    monkeypatch.setenv("OLLAMA_LOCK_PATH", shared_path)
+
+    reloaded = importlib.reload(ollama_lock)
+    try:
+        assert reloaded._LOCK_PATH == shared_path
+    finally:
+        monkeypatch.delenv("OLLAMA_LOCK_PATH", raising=False)
+        importlib.reload(ollama_lock)

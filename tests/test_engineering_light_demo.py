@@ -50,6 +50,18 @@ def sample_manager_intervention(instruction: str = "Build a scientific calculato
     }
 
 
+def test_ollama_base_url_honors_env_override(monkeypatch):
+    """Regression test: the module-level Ollama LLM client used to hardcode
+    base_url="http://localhost:11434" directly. Inside a container that's
+    the container's own loopback, not wherever Ollama actually runs --
+    Engineering would silently fail to reach it in any multi-container
+    deployment (e.g. the Docker Compose bundle)."""
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    module = load_engineering_module()
+
+    assert module.OLLAMA_BASE_URL == "http://ollama:11434"
+
+
 def test_augment_spec_with_rag_context_puts_the_real_spec_first(monkeypatch):
     """Regression test: reproduced live, a request for "a weather app" built
     a calculator instead, because retrieve_rag_context() returned a prior,
