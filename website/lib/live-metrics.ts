@@ -265,6 +265,62 @@ export function auditToAgentActivity(
   return result
 }
 
+export type SwarmStep = {
+  id: string
+  role: string
+  phase: string
+  detail: string
+  at: string
+}
+
+export type SwarmRun = {
+  runId: string
+  steps: SwarmStep[]
+  startedAt: string
+  latestAt: string
+  status: 'running' | 'succeeded' | 'failed'
+}
+
+// Matches the three real CrewAI Agent roles defined in FullSystem
+// (eng-agents/engineering_agent.py) -- not a fixed enum on the frontend's
+// side, just the vocabulary the backend actually emits.
+export const SWARM_ROLES = ['Lead Developer', 'Software Developer', 'Testing Engineer'] as const
+
+/**
+ * Groups the router's "swarm_activity" audit events (written by
+ * eng-agents/engineering_agent.py's log_swarm_event(), one per phase
+ * transition of the real Lead Developer / Software Developer / Testing
+ * Engineer CrewAI agents that plan, write, and test each Engineering
+ * build) into per-build timelines, most recently active first.
+ *
+ * This is the only place in the product where multiple distinct AI
+ * agents actually collaborate turn-by-turn on one artifact -- the seven
+ * department cards are a fixed roster, not agents spawning new agents.
+ */
+export function auditToSwarmRuns(audit: ApiAuditEvent[] | null | undefined, limit = 10): SwarmRun[] {
+  const runs = new Map<string, SwarmStep[]>()
+  for (const event of audit ?? []) {
+    if (event.event_type !== 'swarm_activity') continue
+    const runId = event.subject_id
+    if (!runId) continue
+    const phase = detailString(event, 'phase') ?? event.event_type
+    const detail = typeof event.details?.detail === 'string' ? event.details.detail : ''
+    const steps = runs.get(runId) ?? []
+    steps.push({ id: event.id, role: event.actor || 'unknown', phase, detail, at: event.created_at })
+    runs.set(runId, steps)
+  }
+
+  const result: SwarmRun[] = []
+  for (const [runId, stepsUnsorted] of Array.from(runs.entries())) {
+    const steps = [...stepsUnsorted].sort((a, b) => (a.at < b.at ? -1 : 1))
+    const last = steps[steps.length - 1]
+    const status: SwarmRun['status'] =
+      last.phase === 'build_succeeded' ? 'succeeded' : last.phase === 'build_failed' ? 'failed' : 'running'
+    result.push({ runId, steps, startedAt: steps[0].at, latestAt: last.at, status })
+  }
+  return result.sort((a, b) => (a.latestAt < b.latestAt ? 1 : -1)).slice(0, limit)
+}
+
 /**
  * Real inter-agent message counts from message_submitted audit events,
  * replacing the fabricated mock-data.ts MESSAGE_FLOW table.

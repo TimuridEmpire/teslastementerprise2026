@@ -94,6 +94,27 @@ def commit_and_push(repo, message="chore: agent-generated code"):
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+def log_swarm_event(run_id, role, phase, detail=""):
+    """Best-effort, never fatal: FullSystem.review_and_iterate() actually
+    runs a real multi-agent swarm to build one feature -- a Lead Developer
+    agent plans and reviews, a Software Developer agent writes code, a
+    Testing Engineer agent writes and evaluates tests, with a feedback loop
+    between them when tests fail -- but until now none of that was visible
+    anywhere outside this worker's own local stdout. Writes to the
+    router's own audit log (the same one GET /audit and the website's
+    Observability page already show) under a shared run_id per build, so
+    "how agents are spawning and collaborating to build the application"
+    is something the control plane can actually display, not just claim.
+    """
+    try:
+        from enterprise_router.sqlite_storage import SQLiteStorage
+        db_path = os.environ.get("ENTERPRISE_ROUTER_DB") or os.path.join(_REPO_ROOT, "enterprise_router.db")
+        SQLiteStorage(db_path).log_audit(
+            "swarm_activity", run_id, role, {"phase": phase, "detail": str(detail)[:500]}, now(),
+        )
+    except Exception as exc:
+        print(f"[swarm] audit log failed (non-fatal): {exc}")
+
 def make_response(sender, recipient, task_type, payload, context=None, status="done", error=None):
     if Message is not None:
         envelope = Message.create(
@@ -659,24 +680,33 @@ class FullSystem:
     # Main loop: create plan -> generate initial code -> run tests -> lead feedback -> fix -> repeat
     def review_and_iterate(self, spec, max_iterations=10):
         self.tokens.reset()  # fresh budget for each new top-level task
+        run_id = f"swarm-{uuid.uuid4().hex[:8]}"
+        self._run_id = run_id
         repo = init_output_repo()
         self._clean_output_dir()
+
+        log_swarm_event(run_id, "Lead Developer", "build_started", spec[:200])
 
         plan = self.create_plan(spec)
         with open(Path(OUTPUT_DIR) / "plan.md", "w", encoding="utf-8") as f:
             f.write(plan)
+        log_swarm_event(run_id, "Lead Developer", "planned", plan[:300])
+
         files = self.create_necessary_files(spec, plan)
         testing_file = files[-1]  # testing file is always last
         source_files = files[:-1]
         print(f"Files to create: {files}")
+        log_swarm_event(run_id, "Lead Developer", "files_identified", ", ".join(files))
 
         iteration = 0
 
         # Generate source files with the standard code prompt
         for file in source_files:
             self.generate_code(spec, plan, file, file_list=files)
+            log_swarm_event(run_id, "Software Developer", "wrote_file", file)
         # Generate the test file with the dedicated test prompt for better reliability
         self.generate_tests(spec, plan, testing_file, source_files)
+        log_swarm_event(run_id, "Testing Engineer", "wrote_tests", testing_file)
 
         # Enforce API contract before running tests so weak tests cannot mask
         # missing required methods.
@@ -685,9 +715,14 @@ class FullSystem:
             success_status, error_message = False, contract_message
         else:
             success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
+        log_swarm_event(
+            run_id, "Testing Engineer", "ran_tests",
+            "passed" if success_status else f"failed: {error_message[:200]}",
+        )
         if success_status:
             commit_and_push(repo, f"feat: initial generated code ({testing_file} passing)")
-            return {"status": "success", "iterations": iteration}
+            log_swarm_event(run_id, "Lead Developer", "build_succeeded", f"{testing_file} passing, 0 fix iterations")
+            return {"status": "success", "iterations": iteration, "run_id": run_id}
 
         # Feedback + fix loop
         while iteration < max_iterations:
@@ -718,6 +753,7 @@ class FullSystem:
                 feedback = str(crew.kickoff())
             crew.reset_memories(command_type="all")
             print(f"Iteration {iteration} — Lead feedback:\n{feedback}")
+            log_swarm_event(run_id, "Lead Developer", f"reviewed_failure_iter_{iteration}", feedback[:300])
 
             # Step 2: Dev re-generates each non-test file using the feedback
             for file in files[:-1]:
@@ -753,21 +789,29 @@ class FullSystem:
                 out_path = Path(OUTPUT_DIR) / file
                 with open(out_path, "w", encoding="utf-8") as f:
                     f.write(fixed_code)
+                log_swarm_event(run_id, "Software Developer", f"fixed_file_iter_{iteration}", file)
 
             # Step 3: Always regenerate the test file too, so syntax or assertion
             # issues in tests can be corrected during iterations.
             self.generate_tests(spec, plan, testing_file, source_files, feedback)
+            log_swarm_event(run_id, "Testing Engineer", f"rewrote_tests_iter_{iteration}", testing_file)
 
             contract_ok, contract_message = self.validate_contract(spec, source_files)
             if not contract_ok:
                 success_status, error_message = False, contract_message
             else:
                 success_status, error_message = self.run_tests(str(Path(OUTPUT_DIR) / testing_file))
+            log_swarm_event(
+                run_id, "Testing Engineer", f"ran_tests_iter_{iteration}",
+                "passed" if success_status else f"failed: {error_message[:200]}",
+            )
             if success_status:
                 commit_and_push(repo, f"fix: iteration {iteration} — tests now passing")
-                return {"status": "success", "iterations": iteration}
+                log_swarm_event(run_id, "Lead Developer", "build_succeeded", f"{testing_file} passing, {iteration} fix iteration(s)")
+                return {"status": "success", "iterations": iteration, "run_id": run_id}
 
-        return {"status": "failed", "iterations": iteration}
+        log_swarm_event(run_id, "Lead Developer", "build_failed", f"gave up after {iteration} fix iteration(s)")
+        return {"status": "failed", "iterations": iteration, "run_id": run_id}
 
 
 class EngineeringAgent:
@@ -909,6 +953,11 @@ class EngineeringAgent:
                 "project_id": message.get("context", {}).get("project_id"),
                 "status": "error" if error else result.get("status", "unknown"),
                 "generated_files": self._generated_files(),
+                # Cross-references this build's row in the "swarm_activity"
+                # audit events log_swarm_event() writes during
+                # review_and_iterate() -- absent for light-demo builds,
+                # which never spin up the real CrewAI sub-agent swarm.
+                "swarm_run_id": (result or {}).get("run_id"),
             },
             source_message_id=str(message.get("id", "")),
             source_task_type=str(message.get("task_type", "")),

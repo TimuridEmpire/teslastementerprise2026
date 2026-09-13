@@ -50,6 +50,43 @@ def sample_manager_intervention(instruction: str = "Build a scientific calculato
     }
 
 
+def test_log_swarm_event_writes_to_the_routers_audit_log(monkeypatch, tmp_path):
+    """review_and_iterate() runs a real multi-agent swarm -- a Lead
+    Developer agent plans and reviews, a Software Developer agent writes
+    code, a Testing Engineer agent writes and evaluates tests -- but until
+    log_swarm_event() existed, none of that was visible anywhere outside
+    the worker's own stdout. It must land in the same audit log GET
+    /audit and the website's Observability page already read from."""
+    db_path = tmp_path / "router.db"
+    monkeypatch.setenv("ENTERPRISE_ROUTER_DB", str(db_path))
+    module = load_engineering_module()
+
+    module.log_swarm_event("swarm-abc123", "Software Developer", "wrote_file", "weather_app.py")
+
+    from enterprise_router.sqlite_storage import SQLiteStorage
+    rows = SQLiteStorage(str(db_path)).list_audit_log(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "swarm_activity"
+    assert rows[0]["subject_id"] == "swarm-abc123"
+    assert rows[0]["actor"] == "Software Developer"
+    assert rows[0]["details"]["phase"] == "wrote_file"
+    assert rows[0]["details"]["detail"] == "weather_app.py"
+
+
+def test_log_swarm_event_never_raises_even_if_logging_fails(monkeypatch):
+    module = load_engineering_module()
+
+    class _RaisingStorage:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("simulated storage failure")
+
+    import enterprise_router.sqlite_storage as sqlite_storage_module
+    monkeypatch.setattr(sqlite_storage_module, "SQLiteStorage", _RaisingStorage)
+
+    module.log_swarm_event("swarm-x", "Lead Developer", "planned", "irrelevant")  # must not raise
+
+
 def test_ollama_base_url_honors_env_override(monkeypatch):
     """Regression test: the module-level Ollama LLM client used to hardcode
     base_url="http://localhost:11434" directly. Inside a container that's
