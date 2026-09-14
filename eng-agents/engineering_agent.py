@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import ast
 import uuid
@@ -114,6 +115,69 @@ def log_swarm_event(run_id, role, phase, detail=""):
         )
     except Exception as exc:
         print(f"[swarm] audit log failed (non-fatal): {exc}")
+
+def _lessons_db_path():
+    return os.environ.get("ENTERPRISE_ROUTER_DB") or os.path.join(_REPO_ROOT, "enterprise_router.db")
+
+def record_lesson(role, rule, context=""):
+    """Best-effort, never fatal. Not model fine-tuning -- the local Ollama
+    models this project uses are never retrained, and nothing here changes
+    any weights. This is a lighter, honest analog: whenever a role
+    (Lead Developer, Software Developer, Testing Engineer) is caught
+    provably violating one of its own instructions -- not a test failure's
+    murky root cause, but something deterministic the code itself can
+    detect, like "used a tab instead of a comma" or "didn't put the test
+    file last" (both reproduced live building the flight/to-do-list demo
+    apps) -- that specific mistake is recorded under a role-scoped subject
+    (reusing the router's own audit log, same as log_swarm_event), so a
+    short digest of a role's own past mistakes can be injected back into
+    that same role's future prompts. See recent_lessons().
+    """
+    try:
+        from enterprise_router.sqlite_storage import SQLiteStorage
+        SQLiteStorage(_lessons_db_path()).log_audit(
+            "lesson_recorded", f"lesson:{role}", role,
+            {"rule": str(rule)[:300], "context": str(context)[:300]}, now(),
+        )
+    except Exception as exc:
+        print(f"[lessons] failed to record (non-fatal): {exc}")
+
+def recent_lessons(role, limit=5):
+    """Most recent, de-duplicated mistake rules recorded for `role` (see
+    record_lesson()). Best-effort: returns [] rather than raising if the
+    store is unavailable -- a missing lesson must never block a build."""
+    try:
+        from enterprise_router.sqlite_storage import SQLiteStorage
+        rows = SQLiteStorage(_lessons_db_path()).list_audit_log(limit=limit * 3, subject_id=f"lesson:{role}")
+    except Exception as exc:
+        print(f"[lessons] failed to read (non-fatal): {exc}")
+        return []
+    rules = []
+    for row in rows:
+        if row.get("event_type") != "lesson_recorded":
+            continue
+        rule = row.get("details", {}).get("rule")
+        if rule and rule not in rules:
+            rules.append(rule)
+        if len(rules) >= limit:
+            break
+    return rules
+
+def format_lessons_block(rules):
+    """Render recent_lessons() output as a short prompt block. Deliberately
+    terse (one line per rule, no elaboration) -- this project has already
+    seen a local model fixate on background context and reproduce it
+    instead of following the actual instruction when a prompt got noisy
+    (see _augment_spec_with_rag_context's RAG-ordering fix), so this stays
+    short and clearly labeled as a personal-mistake reminder rather than
+    content to act on directly."""
+    if not rules:
+        return ""
+    lines = "\n".join(f"- {rule}" for rule in rules)
+    return (
+        "\nMISTAKES YOU HAVE PERSONALLY MADE BEFORE ON THIS TEAM -- do not repeat them:\n"
+        f"{lines}\n"
+    )
 
 def make_response(sender, recipient, task_type, payload, context=None, status="done", error=None):
     if Message is not None:
@@ -319,6 +383,96 @@ class FullSystem:
     def _is_streamlit_spec(self, spec):
         return "streamlit" in spec.lower()
 
+    # Matches ordinary "name.ext" files and dotfiles ("app.py", ".gitignore",
+    # ".env.example") but rejects prose leaking into the list (no spaces,
+    # colons, or other stray punctuation the model sometimes adds despite
+    # the "no explanations" instruction).
+    _FILENAME_RE = re.compile(r"^\.?[\w\-]+(\.[\w\-]+)*$")
+
+    @staticmethod
+    def _parse_file_list(raw):
+        """Robust parsing of the lead agent's file-list output.
+
+        The prompt asks for comma-separated names with no other formatting
+        and no folder structure, but the local model doesn't always
+        comply. Reproduced live: a tab landed between two filenames
+        instead of a comma, merging them into one corrupted name
+        ("models.py\\ttests.py") that every subsequent file-write and test
+        run then silently operated on; separately, a folder-prefixed path
+        ("tests/tests.py") appeared despite being told not to use folders.
+        Split on comma/tab/newline, strip any directory component down to
+        just the basename, and drop anything that doesn't look like a
+        plausible filename rather than trusting the raw split. A
+        staticmethod (no CrewAI-backed instance needed) so it's directly
+        unit-testable.
+        """
+        candidates = re.split(r"[,\t\n]+", raw)
+        files = []
+        for candidate in candidates:
+            name = os.path.basename(candidate.strip())
+            if name and FullSystem._FILENAME_RE.match(name) and name not in files:
+                files.append(name)
+        return files
+
+    @staticmethod
+    def _detect_file_list_mistakes(raw):
+        """Deterministic checks for two specific STRICT RULES violations
+        this project caught live: a tab (or newline) used instead of a
+        comma to separate file names (which corrupted one merged file
+        name), and a folder path included despite being told the project
+        root only. Returns short imperative rule strings for
+        record_lesson(), or [] if the output was clean. A staticmethod,
+        pure and unit-testable, kept separate from _parse_file_list so
+        parsing itself doesn't need to know about the lessons store."""
+        mistakes = []
+        if "\t" in raw or "\n" in raw.strip():
+            mistakes.append(
+                "Separate file names with commas ONLY -- never a tab or a newline. "
+                "A stray tab once merged two file names into one corrupted path."
+            )
+        if re.search(r"[^\s,]+/[^\s,]+", raw):
+            mistakes.append(
+                'Do not include a folder path in a file name (e.g. "tests/tests.py") -- '
+                "every file goes in the project root, bare filename only."
+            )
+        return mistakes
+
+    @staticmethod
+    def _extract_error_type(error_message):
+        """Pull the most specific "SomeError: ..." line out of a pytest/
+        unittest traceback for a terse lesson, favoring the LAST match
+        (the actually-raised exception, not an error type merely mentioned
+        earlier in the traceback). Returns None if nothing recognizable is
+        found -- deliberately conservative so a lesson is never recorded
+        from unrelated noise."""
+        matches = re.findall(r"\b([A-Z]\w*(?:Error|Exception)):\s*(.{0,120})", error_message or "")
+        if not matches:
+            return None
+        err_type, snippet = matches[-1]
+        return f"{err_type}: {snippet.strip()}"
+
+    def _record_test_failure_lesson(self, error_message):
+        """Best-effort: a real test failure is rich but noisy -- record a
+        terse, distilled lesson (the exception type, not the whole
+        traceback) for the two roles most responsible for what the tests
+        actually exercise, rather than dumping raw output into future
+        prompts and risking the same "background overwhelms the real
+        instruction" failure mode this project has already hit once
+        (see _augment_spec_with_rag_context)."""
+        detail = self._extract_error_type(error_message)
+        if not detail:
+            return
+        record_lesson(
+            "Software Developer",
+            f"Code you wrote previously caused a test failure ({detail}). "
+            "Double-check for this class of issue before finishing a file.",
+        )
+        record_lesson(
+            "Testing Engineer",
+            f"A previous test run failed with: {detail}. Make sure new tests "
+            "actually exercise this case correctly and don't assume untested behavior.",
+        )
+
     def _clean_output_dir(self):
         output_path = Path(OUTPUT_DIR)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -439,12 +593,14 @@ class FullSystem:
             streamlit_file_hint = """
                 STREAMLIT REQUIREMENT: You MUST include main.py (the Streamlit UI entry point) as a source file.
                 The file list must end with tests.py. Example output: game.py,main.py,tests.py"""
+        lessons_hint = format_lessons_block(recent_lessons("Lead Developer"))
         task_create_files = Task(
             description=f"""
                 You are the lead developer of an engineering team consisting of AI coding agents. You are woking on building a project following the specifications provided. Based on the development plan you have created, determine what files need to be created for this project.
                 To complete this task, create a list containing the names of the files that need to be created along with the extension (e.g. "app.py" for the main code, "test_app.py" for tests, etc.). The files you list should be seperated by commas with no spaces or any other additional formatting in between.
                 You will only be making one testing file! Name it "tests" and have it be the last one in the list!
                 {streamlit_file_hint}
+                {lessons_hint}
                 
                 IMPORTANT:
                 - no folder structure is necessary, just a list of files with extensions that are necessary for the project based on the specifications and the plan you have created.
@@ -471,8 +627,12 @@ class FullSystem:
         )
         crew_files = Crew(agents=[chosen_lead], tasks=[task_create_files])
         with ollama_lock.ollama_call():
-            files = [name.strip() for name in str(crew_files.kickoff()).split(",") if name.strip()]
+            raw_file_list = str(crew_files.kickoff())
+            files = self._parse_file_list(raw_file_list)
         crew_files.reset_memories(command_type="all")
+
+        for mistake in self._detect_file_list_mistakes(raw_file_list):
+            record_lesson("Lead Developer", mistake, context=raw_file_list[:200])
 
         # Enforce mandatory source files so contract checks remain satisfiable.
         required_sources = []
@@ -480,8 +640,15 @@ class FullSystem:
         if self._is_streamlit_spec(spec) and "main.py" not in required_sources:
             required_sources.append("main.py")
         if files:
-            testing_file = files[-1]
-            source_files = files[:-1]
+            testing_file, source_files = self._split_testing_file(files)
+            if files[-1] != testing_file:
+                record_lesson(
+                    "Lead Developer",
+                    'Put the ONE test file (named "tests.<ext>") LAST in your file list -- '
+                    "it was found somewhere in the middle instead, which risks it being "
+                    "mistaken for a source file (or vice versa).",
+                    context=raw_file_list[:200],
+                )
             for req in required_sources:
                 if req not in source_files:
                     source_files.append(req)
@@ -491,6 +658,28 @@ class FullSystem:
             files = required_sources + ["tests.py"]
 
         return files
+
+    @staticmethod
+    def _split_testing_file(files):
+        """Pick the test file out of an already-parsed file list.
+
+        The prompt tells the lead agent to name the one test file
+        "tests.<ext>" and put it last, but it doesn't always comply --
+        reproduced live: a real tests file landed in the middle of the list
+        with an unrelated file last, and code that blindly trusted
+        files[-1] wrote test content into that unrelated file and ran
+        "tests" against it instead. Find whichever entry actually looks
+        like the test file regardless of position; only fall back to "last
+        item" if nothing matches the documented naming convention. Returns
+        (testing_file, source_files).
+        """
+        test_idx = next(
+            (i for i, f in enumerate(files) if re.match(r"^tests?\.\w+$", f, re.IGNORECASE)),
+            None,
+        )
+        if test_idx is None:
+            test_idx = len(files) - 1
+        return files[test_idx], files[:test_idx] + files[test_idx + 1:]
 
     def clean_code(self, code):
         """Basic code cleaning to reduce formatting issues. This can be expanded as needed."""
@@ -506,6 +695,7 @@ class FullSystem:
     def generate_code(self, spec, plan, file, file_list=None):
 
         chosen_dev = self._agent_for("dev", "generate")
+        dev_lessons_hint = format_lessons_block(recent_lessons("Software Developer"))
         streamlit_hint = ""
         if self._is_streamlit_spec(spec) and file == "main.py":
             streamlit_hint = """
@@ -536,6 +726,7 @@ class FullSystem:
                                     if __name__ == '__main__': ...
                 - ONLY write code that would go in the file "{file}", do not write code that would go in any of the other files in the project.
                 {streamlit_hint}
+                {dev_lessons_hint}
 
                 Spec:
                 {spec}
@@ -568,6 +759,7 @@ class FullSystem:
         files are and what they need to test."""
 
         chosen_tester = self._agent_for("tester", "test_gen")
+        tester_lessons_hint = format_lessons_block(recent_lessons("Testing Engineer"))
         source_listing = "\n".join(source_files)
         streamlit_test_hint = ""
         if self._is_streamlit_spec(spec):
@@ -598,6 +790,7 @@ class FullSystem:
                 - Tests MUST NOT require user input().
                 - Tests must import source modules without triggering gameplay.
                 {streamlit_test_hint}
+                {tester_lessons_hint}
 
                 Spec:
                 {spec}
@@ -723,6 +916,7 @@ class FullSystem:
             commit_and_push(repo, f"feat: initial generated code ({testing_file} passing)")
             log_swarm_event(run_id, "Lead Developer", "build_succeeded", f"{testing_file} passing, 0 fix iterations")
             return {"status": "success", "iterations": iteration, "run_id": run_id}
+        self._record_test_failure_lesson(error_message)
 
         # Feedback + fix loop
         while iteration < max_iterations:
@@ -809,6 +1003,7 @@ class FullSystem:
                 commit_and_push(repo, f"fix: iteration {iteration} — tests now passing")
                 log_swarm_event(run_id, "Lead Developer", "build_succeeded", f"{testing_file} passing, {iteration} fix iteration(s)")
                 return {"status": "success", "iterations": iteration, "run_id": run_id}
+            self._record_test_failure_lesson(error_message)
 
         log_swarm_event(run_id, "Lead Developer", "build_failed", f"gave up after {iteration} fix iteration(s)")
         return {"status": "failed", "iterations": iteration, "run_id": run_id}

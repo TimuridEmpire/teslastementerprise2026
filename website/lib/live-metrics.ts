@@ -321,6 +321,39 @@ export function auditToSwarmRuns(audit: ApiAuditEvent[] | null | undefined, limi
   return result.sort((a, b) => (a.latestAt < b.latestAt ? 1 : -1)).slice(0, limit)
 }
 
+export type Lesson = {
+  role: string
+  rule: string
+  at: string
+}
+
+/**
+ * Groups the router's "lesson_recorded" audit events (written by
+ * engineering_agent.py's record_lesson(), whenever a swarm role is caught
+ * provably violating one of its own instructions -- a tab used instead of
+ * a comma, a test file not put last, a test run failing with a specific
+ * error) into a per-role, deduplicated list -- the same digest that
+ * actually gets injected back into that role's own future prompts (see
+ * recent_lessons() / format_lessons_block()). Not model fine-tuning: the
+ * local Ollama models are never retrained, this is a persistent mistake
+ * log read back into context.
+ */
+export function auditToLessons(audit: ApiAuditEvent[] | null | undefined, perRoleLimit = 5): Lesson[] {
+  const byRole = new Map<string, Lesson[]>()
+  const sorted = [...(audit ?? [])].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  for (const event of sorted) {
+    if (event.event_type !== 'lesson_recorded') continue
+    const role = event.actor || 'unknown'
+    const rule = typeof event.details?.rule === 'string' ? event.details.rule : ''
+    if (!rule) continue
+    const existing = byRole.get(role) ?? []
+    if (existing.some(l => l.rule === rule) || existing.length >= perRoleLimit) continue
+    existing.push({ role, rule, at: event.created_at })
+    byRole.set(role, existing)
+  }
+  return Array.from(byRole.values()).flat().sort((a, b) => (a.at < b.at ? 1 : -1))
+}
+
 /**
  * Real inter-agent message counts from message_submitted audit events,
  * replacing the fabricated mock-data.ts MESSAGE_FLOW table.

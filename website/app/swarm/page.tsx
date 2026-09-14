@@ -1,9 +1,9 @@
 'use client'
 
 import { motion } from 'framer-motion'
-import { Network, Crown, Code2, FlaskConical, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
+import { Network, Crown, Code2, FlaskConical, CheckCircle2, XCircle, Loader2, GraduationCap } from 'lucide-react'
 import { useAudit } from '@/lib/hooks'
-import { auditToSwarmRuns, type SwarmStep } from '@/lib/live-metrics'
+import { auditToSwarmRuns, auditToLessons, type SwarmStep } from '@/lib/live-metrics'
 
 const ROLE_ICON: Record<string, React.ReactNode> = {
   'Lead Developer': <Crown size={13} />,
@@ -52,6 +52,10 @@ const STATUS_STYLE: Record<string, { color: string; icon: React.ReactNode; label
 export default function SwarmPage() {
   const { data: audit, error } = useAudit(300)
   const runs = auditToSwarmRuns(audit, 15)
+  const lessons = auditToLessons(audit)
+  const lessonsByRole = Object.keys(ROLE_ICON)
+    .map(role => ({ role, rules: lessons.filter(l => l.role === role) }))
+    .filter(g => g.rules.length > 0)
 
   return (
     <div className="p-6 max-w-[1000px] mx-auto">
@@ -74,6 +78,41 @@ export default function SwarmPage() {
           the router&apos;s own audit log.
         </p>
       </motion.div>
+
+      {lessonsByRole.length > 0 && (
+        <div className="card p-5 mb-5">
+          <div className="flex items-center gap-2 mb-1">
+            <GraduationCap size={14} style={{ color: 'var(--primary-2)' }} />
+            <h2 className="text-[13px] font-semibold" style={{ color: 'var(--text-1)' }}>Lessons Learned</h2>
+          </div>
+          <p className="text-[11px] leading-relaxed mb-4 max-w-[70ch]" style={{ color: 'var(--text-3)' }}>
+            Not model fine-tuning &mdash; the local models are never retrained. Whenever a role is caught
+            provably violating one of its own instructions (a tab used instead of a comma, a test file not
+            put last, a test run failing with a specific error), that mistake is recorded here and fed back
+            into that same role&apos;s own future prompts, so it doesn&apos;t keep repeating it.
+          </p>
+          <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${lessonsByRole.length}, 1fr)` }}>
+            {lessonsByRole.map(({ role, rules }) => {
+              const color = ROLE_COLOR[role] ?? 'var(--text-3)'
+              return (
+                <div key={role}>
+                  <div className="flex items-center gap-1.5 mb-2" style={{ color }}>
+                    {ROLE_ICON[role]}
+                    <span className="text-[11.5px] font-semibold">{role}</span>
+                  </div>
+                  <ul className="flex flex-col gap-1.5">
+                    {rules.map(l => (
+                      <li key={l.rule} className="text-[10.5px] leading-relaxed px-2 py-1.5 rounded-md" style={{ color: 'var(--text-2)', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)' }}>
+                        {l.rule}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col gap-4">
         {runs.length === 0 && (

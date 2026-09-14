@@ -50,6 +50,87 @@ def sample_manager_intervention(instruction: str = "Build a scientific calculato
     }
 
 
+def test_detect_file_list_mistakes_flags_tab_separator():
+    module = load_engineering_module()
+
+    mistakes = module.FullSystem._detect_file_list_mistakes("flight_app.py,config.py,models.py\ttests.py")
+
+    assert len(mistakes) == 1
+    assert "comma" in mistakes[0].lower()
+
+
+def test_detect_file_list_mistakes_flags_folder_path():
+    module = load_engineering_module()
+
+    mistakes = module.FullSystem._detect_file_list_mistakes("app.py,tests/tests.py")
+
+    assert len(mistakes) == 1
+    assert "folder" in mistakes[0].lower()
+
+
+def test_detect_file_list_mistakes_clean_output_has_none():
+    module = load_engineering_module()
+
+    assert module.FullSystem._detect_file_list_mistakes("app.py,tests.py") == []
+
+
+def test_extract_error_type_prefers_the_last_raised_exception():
+    module = load_engineering_module()
+    traceback_text = (
+        "Traceback (most recent call last):\n"
+        '  File "app.py", line 3, in <module>\n'
+        "    import missing_thing\n"
+        "ModuleNotFoundError: No module named 'missing_thing'\n"
+        "\n"
+        "During handling of the above exception, another exception occurred:\n"
+        "\n"
+        "TypeError: add_task() missing 1 required positional argument: 'due_date'"
+    )
+
+    result = module.FullSystem._extract_error_type(traceback_text)
+
+    assert result == "TypeError: add_task() missing 1 required positional argument: 'due_date'"
+
+
+def test_extract_error_type_returns_none_for_unrecognizable_output():
+    module = load_engineering_module()
+
+    assert module.FullSystem._extract_error_type("something went wrong, no idea what") is None
+
+
+def test_record_lesson_and_recent_lessons_round_trip(monkeypatch, tmp_path):
+    """Regression coverage for the "self-learning" feature: a role's own
+    past, deterministically-detected mistakes (see _detect_file_list_mistakes
+    / _record_test_failure_lesson) get recorded and read back scoped to
+    that role, deduplicated, most-recently-repeated first -- not real
+    fine-tuning (the local Ollama models are never retrained), just a
+    persistent mistake log injected back into that role's future prompts."""
+    monkeypatch.setenv("ENTERPRISE_ROUTER_DB", str(tmp_path / "router.db"))
+    module = load_engineering_module()
+
+    module.record_lesson("Lead Developer", "rule A")
+    module.record_lesson("Lead Developer", "rule B")
+    module.record_lesson("Lead Developer", "rule A")  # repeat -- should not duplicate
+    module.record_lesson("Software Developer", "unrelated role rule")
+
+    assert module.recent_lessons("Lead Developer") == ["rule A", "rule B"]
+    assert module.recent_lessons("Software Developer") == ["unrelated role rule"]
+    assert module.recent_lessons("Testing Engineer") == []
+
+
+def test_recent_lessons_never_raises_when_store_unavailable(monkeypatch):
+    module = load_engineering_module()
+
+    class _RaisingStorage:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("simulated storage failure")
+
+    import enterprise_router.sqlite_storage as sqlite_storage_module
+    monkeypatch.setattr(sqlite_storage_module, "SQLiteStorage", _RaisingStorage)
+
+    assert module.recent_lessons("Lead Developer") == []
+
+
 def test_log_swarm_event_writes_to_the_routers_audit_log(monkeypatch, tmp_path):
     """review_and_iterate() runs a real multi-agent swarm -- a Lead
     Developer agent plans and reviews, a Software Developer agent writes
@@ -85,6 +166,67 @@ def test_log_swarm_event_never_raises_even_if_logging_fails(monkeypatch):
     monkeypatch.setattr(sqlite_storage_module, "SQLiteStorage", _RaisingStorage)
 
     module.log_swarm_event("swarm-x", "Lead Developer", "planned", "irrelevant")  # must not raise
+
+
+def test_parse_file_list_handles_a_tab_instead_of_a_comma():
+    """Regression test: reproduced live building a "flight app" via the CEO
+    reasoning loop -- the lead agent's file-list output used a tab between
+    the last two filenames instead of a comma ("models.py\\ttests.py"),
+    which the old str.split(",") parser left as one corrupted filename.
+    Every subsequent file write and test run then silently operated on
+    that garbage path, and the fix-feedback loop couldn't recover because
+    the corrupted name was never regenerated across iterations."""
+    module = load_engineering_module()
+
+    files = module.FullSystem._parse_file_list("flight_app.py,config.py,routes.py,models.py\ttests.py")
+
+    assert files == ["flight_app.py", "config.py", "routes.py", "models.py", "tests.py"]
+
+
+def test_parse_file_list_strips_folder_prefixes():
+    """Regression test: reproduced live -- the lead agent output
+    "tests/tests.py" despite being told not to use folder structure."""
+    module = load_engineering_module()
+
+    files = module.FullSystem._parse_file_list("app.py,tests/tests.py")
+
+    assert files == ["app.py", "tests.py"]
+
+
+def test_parse_file_list_drops_non_filename_noise():
+    module = load_engineering_module()
+
+    files = module.FullSystem._parse_file_list("app.py, here is your list:, tests.py")
+
+    assert files == ["app.py", "tests.py"]
+
+
+def test_split_testing_file_finds_tests_file_out_of_position():
+    """Regression test: reproduced live building a To-Do List app -- the
+    lead agent's file list was "README.md, requirements.txt, to_do_list.py,
+    tests/tests.py, .gitignore, config.py" (tests file in the middle,
+    config.py last). Code that trusted files[-1] wrote test content into
+    config.py and ran "tests" against it instead of the real test file,
+    guaranteeing every test run failed regardless of what Software
+    Developer actually wrote."""
+    module = load_engineering_module()
+    files = module.FullSystem._parse_file_list(
+        "README.md,requirements.txt,to_do_list.py,tests/tests.py,.gitignore,config.py"
+    )
+
+    testing_file, source_files = module.FullSystem._split_testing_file(files)
+
+    assert testing_file == "tests.py"
+    assert source_files == ["README.md", "requirements.txt", "to_do_list.py", ".gitignore", "config.py"]
+
+
+def test_split_testing_file_falls_back_to_last_item_when_nothing_matches():
+    module = load_engineering_module()
+
+    testing_file, source_files = module.FullSystem._split_testing_file(["a.py", "b.py"])
+
+    assert testing_file == "b.py"
+    assert source_files == ["a.py"]
 
 
 def test_ollama_base_url_honors_env_override(monkeypatch):
